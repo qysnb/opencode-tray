@@ -9,10 +9,10 @@ a missing or misspelled key fails loudly instead of silently falling back.
 The preference lives in ``settings.json`` next to this file, so the project stays
 portable: copy the folder anywhere and it keeps its language.
 
-用法:
+Usage:
     python i18n.py --selftest
 
-依赖: 无(仅标准库)
+Dependencies: none (standard library only).
 """
 
 import argparse
@@ -28,7 +28,7 @@ for _stream in (sys.stdout, sys.stderr):
             pass
 
 DEFAULT_LANGUAGE = "en"
-# 语言自称(不翻译),顺序即菜单顺序
+# Language names in their own language (never translated); order = menu order
 LANGUAGE_NAMES = {
     "en": "English",
     "zh-Hans": "简体中文",
@@ -202,12 +202,12 @@ _STRINGS = {
 
 
 def language_names() -> dict:
-    """语言代码 -> 自称(始终不翻译)。"""
+    """Language code -> name in that language (never translated)."""
     return dict(LANGUAGE_NAMES)
 
 
 def settings_path() -> Path:
-    """语言偏好存放位置:与本模块同目录的 settings.json(便携、可随文件夹整体搬走)。"""
+    """Where the preference lives: settings.json next to this module (portable)."""
     return Path(__file__).resolve().with_name("settings.json")
 
 
@@ -224,7 +224,7 @@ _current = None
 
 
 def current() -> str:
-    """当前语言代码。未显式设置时读 settings.json,再退回默认(English)。"""
+    """Current language code, read from settings.json, falling back to the default."""
     global _current
     if _current is None:
         _current = _read_saved_language() or DEFAULT_LANGUAGE
@@ -233,9 +233,10 @@ def current() -> str:
 
 def set_language(code: str, persist: bool = True) -> str:
     """
-    切换语言并返回实际生效的代码。
+    Switch language and return the code that took effect.
 
-    写入失败不抛异常:目录只读时语言在当前进程内仍然生效,只是下次启动不记住。
+    A failed write does not raise: on a read-only directory the language still
+    applies to this process, it just will not be remembered next time.
     """
     global _current
     if code not in _STRINGS:
@@ -254,9 +255,11 @@ def set_language(code: str, persist: bool = True) -> str:
 
 def _(key: str, **kwargs) -> str:
     """
-    取一条文案。找不到的键原样返回(便于发现漏配),插值用 str.format。
+    Look up a message. An unknown key is returned as-is so gaps stay visible;
+    interpolation uses str.format.
 
-    format 失败(例如占位符名字写错)也原样返回,绝不让缺一条文案把托盘拖垮。
+    A formatting failure (for example a misspelled placeholder) also returns the
+    raw text - one bad message must never take the tray down.
     """
     table = _STRINGS.get(current()) or _STRINGS[DEFAULT_LANGUAGE]
     text = table.get(key)
@@ -271,7 +274,7 @@ def _(key: str, **kwargs) -> str:
 
 
 def all_keys(language: str = DEFAULT_LANGUAGE):
-    """某语言定义的全部键(自检用)。"""
+    """Every key defined for a language (used by the self test)."""
     return set(_STRINGS.get(language, {}))
 
 
@@ -282,19 +285,20 @@ def selftest() -> int:
         print(f"  [{'PASS' if ok else 'FAIL'}] {label}" + (f" — {detail}" if detail else ""))
         results.append(ok)
 
-    print("== 1. 语言表键集合一致(漏配会静默退回英文,必须显式检查) ==")
+    print("== 1. Both catalogues define the same keys ==")
     en_keys = all_keys("en")
     zh_keys = all_keys("zh-Hans")
-    check("英文表非空", len(en_keys) > 30, f"{len(en_keys)} 条")
-    check("两种语言键集合完全相同", en_keys == zh_keys,
-          f"仅英文 {sorted(en_keys - zh_keys)} / 仅中文 {sorted(zh_keys - en_keys)}")
-    check("声明了两种语言", set(LANGUAGE_NAMES) == {"en", "zh-Hans"}, str(list(LANGUAGE_NAMES)))
+    check("English catalogue is populated", len(en_keys) > 30, f"{len(en_keys)} keys")
+    check("key sets are identical", en_keys == zh_keys,
+          f"en only {sorted(en_keys - zh_keys)} / zh only {sorted(zh_keys - en_keys)}")
+    check("two languages declared", set(LANGUAGE_NAMES) == {"en", "zh-Hans"},
+          str(list(LANGUAGE_NAMES)))
 
-    print("== 2. 非空文案 ==")
+    print("== 2. No empty messages ==")
     empty = [k for k in en_keys if not _STRINGS["en"][k].strip() or not _STRINGS["zh-Hans"][k].strip()]
-    check("没有空文案", not empty, str(empty))
+    check("no empty message", not empty, str(empty))
 
-    print("== 3. 占位符一致(否则一种语言会丢参数) ==")
+    print("== 3. Placeholders match (otherwise a language loses arguments) ==")
     import re
     pattern = re.compile(r"\{(\w+)")
     mismatched = []
@@ -303,35 +307,38 @@ def selftest() -> int:
         zh_fields = set(pattern.findall(_STRINGS["zh-Hans"][key]))
         if en_fields != zh_fields:
             mismatched.append(f"{key}: en={sorted(en_fields)} zh={sorted(zh_fields)}")
-    check("两种语言占位符名称一致", not mismatched, "; ".join(mismatched[:3]))
+    check("placeholder names are identical", not mismatched, "; ".join(mismatched[:3]))
 
-    print("== 4. 切换语言真的改变输出 ==")
+    print("== 4. Switching language really changes the output ==")
     original = current()
     try:
         set_language("en", persist=False)
         english = _("state.running")
         set_language("zh-Hans", persist=False)
         chinese = _("state.running")
-        check("en 与 zh-Hans 输出不同", english != chinese, f"{english!r} vs {chinese!r}")
-        check("英文界面取自英文表", english == "Running", english)
-        check("中文界面取自中文表", chinese == "运行中", chinese)
+        check("en and zh-Hans differ", english != chinese, f"{english!r} vs {chinese!r}")
+        check("English output comes from the English table", english == "Running", english)
+        check("Chinese output comes from the Chinese table", chinese == "运行中", chinese)
 
-        print("== 5. 插值 ==")
+        print("== 5. Interpolation ==")
         set_language("en", persist=False)
-        check("带参数插值", _("tooltip.active", count=3) == " · active 3", _("tooltip.active", count=3))
+        check("interpolates", _("tooltip.active", count=3) == " · active 3",
+              _("tooltip.active", count=3))
         set_language("zh-Hans", persist=False)
-        check("中文带参数插值", _("tooltip.active", count=3) == " · 活跃 3", _("tooltip.active", count=3))
+        check("interpolates in Chinese", _("tooltip.active", count=3) == " · 活跃 3",
+              _("tooltip.active", count=3))
 
-        print("== 6. 容错 ==")
+        print("== 6. Graceful degradation ==")
         set_language("en", persist=False)
-        check("未知键原样返回", _("no.such.key") == "no.such.key")
-        check("缺参数不抛异常", isinstance(_("tooltip.active"), str))
-        check("非法语言代码退回默认", set_language("xx-YY", persist=False) == DEFAULT_LANGUAGE)
+        check("unknown key returned as-is", _("no.such.key") == "no.such.key")
+        check("missing argument does not raise", isinstance(_("tooltip.active"), str))
+        check("invalid language code falls back to the default",
+              set_language("xx-YY", persist=False) == DEFAULT_LANGUAGE)
     finally:
         set_language(original, persist=False)
 
     passed, total = sum(results), len(results)
-    print(f"\n自检结果:{passed}/{total} 通过")
+    print(f"\nSelf test: {passed}/{total} passed")
     return 0 if passed == total else 1
 
 

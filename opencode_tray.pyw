@@ -519,11 +519,15 @@ class TrayApp:
         return handler
 
     def _set_language(self, code):
-        """切换语言:持久化 + 让菜单与 tooltip 立刻反映新语言。"""
-        applied = i18n.set_language(code)
-        self._say(i18n._("menu.language") + ": " + i18n.language_names()[applied])
+        """
+        Switch language: persist it and redraw the menu and tooltip right away.
+
+        Deliberately silent: the radio check already shows which language is
+        active, so a notification there is just noise.
+        """
+        i18n.set_language(code)
         try:
-            self._sync_icon()      # 更新 tooltip 与菜单文本
+            self._sync_icon()      # refresh tooltip + menu text
         except Exception:
             pass
 
