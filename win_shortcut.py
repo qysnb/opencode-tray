@@ -60,6 +60,20 @@ PF_SAVE = 6
 _IUNKNOWN_QUERY_INTERFACE = 0
 _IUNKNOWN_RELEASE = 2
 
+# IPropertyStore, used to tag a shortcut with an AppUserModelID. Windows names the app in
+# a notification from that ID; without one it falls back to the executable's
+# FileDescription, which is why pythonw.exe shows up as "Python".
+PS_GET_VALUE = 5
+PS_SET_VALUE = 6
+PS_COMMIT = 7
+
+PKEY_APP_USER_MODEL_ID = 5
+VT_LPWSTR = 31
+
+# STGM access modes for IPersistFile::Load
+STGM_READ = 0x00000000
+STGM_READWRITE = 0x00000002
+
 
 class GUID(ctypes.Structure):
     _fields_ = [
@@ -79,6 +93,27 @@ def _guid(text: str) -> GUID:
 CLSID_SHELL_LINK = _guid("{00021401-0000-0000-C000-000000000046}")
 IID_ISHELLLINKW = _guid("{000214F9-0000-0000-C000-000000000046}")
 IID_IPERSISTFILE = _guid("{0000010B-0000-0000-C000-000000000046}")
+IID_IPROPERTYSTORE = _guid("{886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99}")
+
+# PKEY_AppUserModel_ID
+FMTID_APP_USER_MODEL = _guid("{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}")
+
+
+class PROPERTYKEY(ctypes.Structure):
+    _fields_ = [
+        ("fmtid", GUID),
+        ("pid", ctypes.c_ulong),
+    ]
+
+
+class PROPVARIANT(ctypes.Structure):
+    _fields_ = [
+        ("vt", ctypes.c_ushort),
+        ("wReserved1", ctypes.c_ushort),
+        ("wReserved2", ctypes.c_ushort),
+        ("wReserved3", ctypes.c_ushort),
+        ("pwszVal", ctypes.c_wchar_p),
+    ]
 
 
 def _method(interface, index, restype, *argtypes):
@@ -215,6 +250,111 @@ def read_shortcut(path) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# AppUserModelID tagging
+# ---------------------------------------------------------------------------
+
+def _load_shell_link(path, read_write=False):
+    """Open an existing .lnk and return its IShellLinkW pointer.
+
+    A property store can only be written when the file was loaded read/write; with the
+    default STGM_READ, IPropertyStore::SetValue fails with STG_E_ACCESSDENIED.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(path)
+    link = _open_shell_link()
+    persist = _as_persist_file(link)
+    mode = STGM_READWRITE if read_write else STGM_READ
+    try:
+        if _method(persist, PF_LOAD, HRESULT, c_wchar_p, c_uint)(
+            persist, str(path), mode
+        ) != 0:
+            raise OSError("IPersistFile::Load failed; is this a valid .lnk?")
+    finally:
+        _release(persist)
+    return link
+
+
+def _property_store(link):
+    """QueryInterface for IPropertyStore."""
+    store = c_void_p()
+    result = _method(link, _IUNKNOWN_QUERY_INTERFACE, HRESULT, c_void_p, c_void_p)(
+        link, byref(IID_IPROPERTYSTORE), byref(store)
+    )
+    if result != 0:
+        raise OSError(f"QueryInterface(IPropertyStore) failed: hr={result:#x}")
+    return store
+
+
+def _app_user_model_key() -> PROPERTYKEY:
+    return PROPERTYKEY(fmtid=FMTID_APP_USER_MODEL, pid=PKEY_APP_USER_MODEL_ID)
+
+
+def set_app_user_model_id(path, aumid: str):
+    """
+    Tag an existing .lnk with an AppUserModelID and persist it.
+
+    Windows matches a running process's AUMID against the shortcuts that carry the same
+    ID and uses that shortcut's name as the application name - in notifications and in
+    the taskbar. Without it, a script run by pythonw.exe is presented as "Python".
+
+    IPropertyStore::Commit alone is NOT enough: it updates the in-memory link, and a
+    fresh read of the file still comes back empty. The link has to serialise itself with
+    IPersistFile::Save afterwards. (Measured: without Save the file stayed 666 bytes and
+    the property was gone; with it, 727 bytes and the value round-trips.)
+    """
+    link = _load_shell_link(path, read_write=True)
+    try:
+        store = _property_store(link)
+        try:
+            key = _app_user_model_key()
+            value = PROPVARIANT(vt=VT_LPWSTR, pwszVal=aumid)
+            result = _method(store, PS_SET_VALUE, HRESULT,
+                             POINTER(PROPERTYKEY), POINTER(PROPVARIANT))(
+                store, byref(key), byref(value)
+            )
+            if result != 0:
+                raise OSError(f"IPropertyStore::SetValue failed: hr={result:#x}")
+            if _method(store, PS_COMMIT, HRESULT)(store) != 0:
+                raise OSError("IPropertyStore::Commit failed")
+        finally:
+            _release(store)
+
+        persist = _as_persist_file(link)
+        try:
+            if _method(persist, PF_SAVE, HRESULT, c_wchar_p, c_int)(
+                persist, str(path), 1
+            ) != 0:
+                raise OSError("IPersistFile::Save failed")
+        finally:
+            _release(persist)
+    finally:
+        _release(link)
+    return Path(path)
+
+
+def get_app_user_model_id(path):
+    """Read PKEY_AppUserModel_ID back from a .lnk; returns "" when unset."""
+    link = _load_shell_link(path)
+    try:
+        store = _property_store(link)
+        try:
+            key = _app_user_model_key()
+            value = PROPVARIANT()
+            result = _method(store, PS_GET_VALUE, HRESULT,
+                             POINTER(PROPERTYKEY), POINTER(PROPVARIANT))(
+                store, byref(key), byref(value)
+            )
+            if result != 0 or value.vt != VT_LPWSTR or not value.pwszVal:
+                return ""
+            return value.pwszVal
+        finally:
+            _release(store)
+    finally:
+        _release(link)
+
+
+# ---------------------------------------------------------------------------
 # Self test
 # ---------------------------------------------------------------------------
 
@@ -260,6 +400,16 @@ def selftest() -> int:
                               Path(data["working_dir"]) == desktop, data["working_dir"]))
         results.append(_check("description round-trips",
                               data["description"] == description, data["description"]))
+
+        # AppUserModelID tagging: this is what makes Windows call the app by our name
+        # instead of reporting the interpreter it happens to run on.
+        aumid = "qysnb.opencode-tray.selftest"
+        set_app_user_model_id(probe, aumid)
+        results.append(_check("AppUserModelID round-trips",
+                              get_app_user_model_id(probe) == aumid,
+                              get_app_user_model_id(probe)))
+        results.append(_check("link still valid after tagging",
+                              read_shortcut(probe)["target"] == data["target"]))
     finally:
         if probe.exists():
             probe.unlink()

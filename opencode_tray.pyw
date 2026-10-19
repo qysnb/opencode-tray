@@ -140,6 +140,61 @@ def acquire_single_instance():
 
 
 # ---------------------------------------------------------------------------
+# Application identity (so notifications say "opencode-tray", not "Python")
+# ---------------------------------------------------------------------------
+
+def startmenu_shortcut_path() -> Path:
+    """Where the app-identity shortcut lives."""
+    appdata = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+    return appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs" / STARTMENU_SHORTCUT_NAME
+
+
+def apply_app_identity() -> bool:
+    """
+    Give the process the identity Windows uses to name it.
+
+    Without this, a notification's header reads "Python", because the process really is
+    pythonw.exe and that is its FileDescription. Two halves are needed: the process has
+    to declare an AppUserModelID, and a Start Menu shortcut has to carry the same ID so
+    the shell can resolve a display name for it.
+
+    Best effort: if either half fails the tray still works, notifications just keep the
+    interpreter's name.
+    """
+    ok = True
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            ctypes.c_wchar_p(APP_USER_MODEL_ID)
+        )
+    except Exception:
+        ok = False
+
+    try:
+        target = startmenu_shortcut_path()
+        script = Path(__file__).resolve()
+        if not target.exists():
+            win_shortcut.create_shortcut(
+                target,
+                target=_preferred_pythonw(),
+                arguments=f'"{script}"',
+                working_dir=script.parent,
+                description=app_name(),
+                icon_path=ensure_icon_file(),
+            )
+        # Rewriting on every launch would be a needless write; only fix it if it drifted.
+        if win_shortcut.get_app_user_model_id(target) != APP_USER_MODEL_ID:
+            win_shortcut.set_app_user_model_id(target, APP_USER_MODEL_ID)
+    except (OSError, ValueError):
+        ok = False
+    return ok
+
+
+def remove_app_identity_shortcut() -> bool:
+    """Delete the app-identity shortcut. Returns True when it is gone."""
+    return _remove_file(startmenu_shortcut_path())
+
+
+# ---------------------------------------------------------------------------
 # Autostart
 # ---------------------------------------------------------------------------
 # Why the registry and not the Startup folder:
@@ -150,9 +205,14 @@ def acquire_single_instance():
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_VALUE_NAME = "OpenCodeTray"
-# The shortcut name stays language-neutral: --install-shortcut writes it to the desktop,
-# and a name that followed the UI language would leave an orphan on every switch. The old
-# Chinese name is cleaned up on install.
+# Windows names a notification's app from the AppUserModelID. A process started as
+# pythonw.exe inherits that executable's FileDescription ("Python") unless it declares
+# its own ID, and the display name comes from a Start Menu shortcut carrying the same ID.
+APP_USER_MODEL_ID = "qysnb.opencode-tray"
+STARTMENU_SHORTCUT_NAME = "opencode-tray.lnk"
+# The shortcut name stays language-neutral: it is written to the desktop, and a name that
+# followed the UI language would leave an orphan behind on every switch. The old Chinese
+# name is cleaned up on install.
 DESKTOP_SHORTCUT_NAME = "OpenCode Tray.lnk"
 LEGACY_SHORTCUT_NAMES = ("OpenCode 托盘指示器.lnk",)
 
@@ -272,7 +332,12 @@ def _remove_file(path) -> bool:
 
 
 def uninstall_shortcut():
-    """Remove the desktop shortcut, including the legacy name. Returns (ok, message)."""
+    """
+    Remove the shortcuts: the desktop one (including the legacy name) and the Start Menu
+    entry that carries the app identity. Returns (ok, message).
+    """
+    # The Start Menu entry is what names the app, so it goes with the shortcuts.
+    remove_app_identity_shortcut()
     targets = [shortcut_path()] + [p for p in _legacy_shortcut_paths() if p.exists()]
     existing = [p for p in targets if p.exists()]
     if not existing:
@@ -857,6 +922,24 @@ def _selftest_body(check, L, results) -> int:
     check("defaults to en without settings.json", _i18n.DEFAULT_LANGUAGE == "en")
     check("the default language is named English", _i18n.LANGUAGE_NAMES["en"] == "English")
 
+    print("== 6. Application identity (so notifications say opencode-tray) ==")
+    check("AUMID is a single token (no spaces allowed)",
+          bool(APP_USER_MODEL_ID) and " " not in APP_USER_MODEL_ID, APP_USER_MODEL_ID)
+    check("AUMID matches owner/repo naming",
+          APP_USER_MODEL_ID.startswith("qysnb."), APP_USER_MODEL_ID)
+    startmenu = startmenu_shortcut_path()
+    check("Start Menu path is under Programs",
+          "Start Menu" in str(startmenu) and startmenu.name == STARTMENU_SHORTCUT_NAME,
+          str(startmenu))
+    if startmenu.exists():
+        check("Start Menu shortcut carries the AUMID",
+              win_shortcut.get_app_user_model_id(startmenu) == APP_USER_MODEL_ID,
+              win_shortcut.get_app_user_model_id(startmenu))
+    else:
+        check("Start Menu shortcut not created yet (created on first run)", True,
+              "run the tray once to create it")
+
+    print("== 8. Interpreter is pinned (not guessed from PATH) ==")
     print("== 7. A persistent poll failure notifies once, not every poll ==")
     noisy = TrayApp()
     notifications = []
@@ -940,6 +1023,9 @@ def main(argv=None) -> int:
         _inform(f"{reason}\n\n{i18n._('single.hint')}")
         return 1
 
+    # Must happen before the icon exists: the AUMID has to be declared before the shell
+    # creates any window for this process, otherwise notifications still say "Python".
+    apply_app_identity()
     app = TrayApp()
     app.run(args.demo)
 

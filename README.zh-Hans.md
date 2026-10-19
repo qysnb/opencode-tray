@@ -106,6 +106,10 @@ python  win_shortcut.py     --selftest   # 7 项:.lnk 往返,含非 ASCII
   那会销毁 Windows 正在跟踪的句柄，导致悬停高亮卡住或不出现。
 - **开机自启用注册表而不是「启动」文件夹**，因为部分加固过的机器会直接拒绝
   `.cmd` / `.bat` / `.vbs`。
+- **通知里的应用名由 AppUserModelID 决定，而不是解释器。** 以 `pythonw.exe` 启动的进程会继承
+  该可执行文件的 `FileDescription`，所以 Windows 以前把气泡标题显示成"Python"。托盘现在声明
+  `qysnb.opencode-tray`，并写一个带同一 ID 的开始菜单快捷方式 —— shell 就是靠它解析出应用名的。
+  两者缺一不可；快捷方式在首次运行时创建，`--uninstall-shortcut` 会一并删除。
 - **自启项与快捷方式会显式固定解释器**（用装它时的那个 Python 旁边的 `pythonw`），
   因为多 Python 机器上 `shutil.which` 可能选到另一个。
 

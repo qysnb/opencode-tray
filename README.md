@@ -115,6 +115,12 @@ Several things here look odd until you know why.
   tracking and breaks hover highlighting.
 - **Autostart uses the registry, not the Startup folder**, because the Startup folder on some
   hardened machines refuses `.cmd` / `.bat` / `.vbs` outright.
+- **Notifications are named by an AppUserModelID, not by the interpreter.** A process
+  started as `pythonw.exe` inherits that executable's `FileDescription`, so Windows used to
+  label the balloons "Python". The tray declares `qysnb.opencode-tray` and writes a Start
+  Menu shortcut carrying the same ID, which is what lets the shell resolve the name. Both
+  halves are required; the shortcut is created on first run and removed by
+  `--uninstall-shortcut`.
 - **The autostart entry and the shortcut pin the interpreter explicitly** (the `pythonw` next to
   the Python that ran the install), because `shutil.which` picks a different Python on machines
   with several installs.
