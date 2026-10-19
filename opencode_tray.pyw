@@ -315,6 +315,8 @@ class TrayApp:
         self.message = ""
         self.message_until = 0.0
         self.polls = 0
+        # Last distinct poll failure, so a persistent fault only notifies once
+        self._poll_error = None
 
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -347,11 +349,26 @@ class TrayApp:
 
     def _poll_loop(self):
         while not self._stop.is_set():
-            try:
-                self.refresh()
-            except Exception as exc:  # the poll thread must survive any single failure
-                self._say(i18n._("poll.failed", error=exc))
+            self._poll_once()
             self._stop.wait(POLL_SECONDS)
+
+    def _poll_once(self):
+        """
+        One poll iteration. Never raises: a bad round must not kill the thread.
+
+        A failure only notifies when the message *changes*. An earlier version called
+        _say() unconditionally, so any persistent fault popped a balloon every
+        POLL_SECONDS - which is exactly how a NameError in probe_server turned into an
+        endless stream of notifications instead of one.
+        """
+        try:
+            self.refresh()
+            self._poll_error = None
+        except Exception as exc:  # noqa: BLE001 - the poll thread must survive anything
+            message = i18n._("poll.failed", error=exc)
+            if message != self._poll_error:
+                self._poll_error = message
+                self._say(message)
 
     def refresh(self):
         """Probe the service and sessions once, then sync the icon and tooltip."""
@@ -840,7 +857,33 @@ def _selftest_body(check, L, results) -> int:
     check("defaults to en without settings.json", _i18n.DEFAULT_LANGUAGE == "en")
     check("the default language is named English", _i18n.LANGUAGE_NAMES["en"] == "English")
 
-    print("== 6. Interpreter is pinned (not guessed from PATH) ==")
+    print("== 7. A persistent poll failure notifies once, not every poll ==")
+    noisy = TrayApp()
+    notifications = []
+    noisy._say = lambda text: notifications.append(text)
+
+    def exploding():
+        raise RuntimeError("simulated probe failure")
+
+    noisy.refresh = exploding
+    for _ in range(4):
+        noisy._poll_once()
+    check("4 failing polls produce exactly 1 notification",
+          len(notifications) == 1, f"{len(notifications)}")
+    check("the notification names the cause",
+          notifications and "simulated probe failure" in notifications[0],
+          notifications[0] if notifications else "")
+
+    noisy.refresh = lambda: None
+    noisy._poll_once()
+    check("recovery clears the remembered error", noisy._poll_error is None)
+
+    noisy.refresh = exploding
+    noisy._poll_once()
+    check("a failure after recovery notifies again", len(notifications) == 2,
+          f"{len(notifications)}")
+
+    print("== 8. Interpreter is pinned (not guessed from PATH) ==")
     preferred = _preferred_pythonw()
     check("resolves a pythonw path", bool(preferred), preferred)
     check("prefers the current interpreter's directory",

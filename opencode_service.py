@@ -246,7 +246,7 @@ def probe_server(timeout: float = DEFAULT_TIMEOUT, path=None) -> ServerStatus:
     """
     service = read_service(path)
     if service is None:
-        return ServerStatus(state=NO_SERVICE, detail=STATE_DETAILS[NO_SERVICE])
+        return ServerStatus(state=NO_SERVICE, detail=state_detail(NO_SERVICE))
 
     url = service["url"]
     outcome, info = fetch_json(url.rstrip("/") + "/api/info", service["password"], timeout)
@@ -677,6 +677,46 @@ def selftest() -> int:
     print(f"  state={status.label} version={status.version} pid={status.pid} url={status.url}")
     print(f"  tooltip: {status.tooltip()}")
     results.append(_check("returns a valid state", status.state in STATE_KEYS))
+
+    # Regression: probe_server used to reference a constant that no longer existed, which
+    # only blew up on the "service stopped" branch. The live probe above never takes that
+    # branch, so it stayed green while the tray raised NameError every 3 seconds.
+    print("== 3b. probe_server() when the service is unavailable (regression) ==")
+    with tempfile.TemporaryDirectory() as tmp:
+        absent = Path(tmp) / "absent.json"
+        try:
+            stopped = probe_server(path=absent)
+            ok, detail = True, f"state={stopped.state}"
+            label_ok = bool(stopped.label)
+            detail_ok = bool(stopped.detail)
+            tooltip_ok = isinstance(stopped.tooltip(), str) and bool(stopped.tooltip())
+        except Exception as exc:  # noqa: BLE001 - this is exactly what regressed
+            ok, detail = False, f"{type(exc).__name__}: {exc}"
+            stopped = label_ok = detail_ok = tooltip_ok = None
+        results.append(_check("no service.json does not raise", ok, detail))
+        results.append(_check("reports the not-running state",
+                              stopped is not None and stopped.state == NO_SERVICE,
+                              getattr(stopped, "state", "")))
+        results.append(_check("has a human-readable detail", bool(detail_ok)))
+        results.append(_check("label and tooltip still render", bool(label_ok and tooltip_ok)))
+
+        # A registration file that points at a closed port: the unreachable branch.
+        dead = Path(tmp) / "dead.json"
+        dead.write_text(json.dumps({
+            "url": "http://127.0.0.1:1", "password": "x", "version": "2.0.0", "pid": 1,
+        }), encoding="utf-8")
+        try:
+            unreachable = probe_server(timeout=1.0, path=dead)
+            ok2, detail2 = True, f"state={unreachable.state}"
+            detail2_ok = bool(unreachable.detail)
+        except Exception as exc:  # noqa: BLE001
+            ok2, detail2 = False, f"{type(exc).__name__}: {exc}"
+            unreachable = detail2_ok = None
+        results.append(_check("a dead port does not raise", ok2, detail2))
+        results.append(_check("reports not responding",
+                              unreachable is not None and unreachable.state == UNREACHABLE,
+                              getattr(unreachable, "state", "")))
+        results.append(_check("not-responding has a detail", bool(detail2_ok)))
 
     print("== 4. list_sessions() live session list ==")
     sessions = list_sessions()
