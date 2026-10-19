@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 # 由 opencode_tray.pyw --install-shortcut 现画的托盘图标(生成物)
 opencode_tray.ico
+# 用户偏好(语言),因机器而异,不该提交
+settings.json

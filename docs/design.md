@@ -224,17 +224,33 @@ def open_session(item) -> None
 
 ### 菜单结构
 
+界面默认**英文**,可在 Language / 语言 子菜单切到简体中文(选择记进 `settings.json`)。
+
 ```
-OpenCode · 运行中 v2.0.32                ← 禁用标签行
+OpenCode Service: Running v2.0.32         ← 禁用标签行
 ────────────────────────────
-会话 ▸  ● ses_eadcaf… OpenCode Windows 托盘…
-        ○ ses_ebb22f… OpenCode 安卓移动端…（2 小时前）
-        刷新
+Sessions     ▸  ● ses_eadcaf… OpenCode Windows tray…
+                 ○ ses_ebb22f… (2h ago)
+                 Refresh
 ────────────────────────────
-重启服务 / 停止服务 / 启动服务
+Restart service / Stop service / Start service
 ────────────────────────────
-退出
+Language     ▸  ● English
+                 ○ 简体中文
+────────────────────────────
+Quit
 ```
+
+### 国际化(i18n)
+
+- 文案集中在 `i18n.py` 的语言表里,按键取值(`i18n._("menu.restart")`);数据层与界面层
+  都只用键,**不硬编码文案**。这样两层都不需要知道当前语言。
+- 语言自称(English / 简体中文)**不翻译**:界面是英文时也该能认出"简体中文"那一项。
+- 偏好存在与本模块同目录的 `settings.json`(已 gitignore)。项目因此保持便携 ——
+  整个文件夹搬走,语言设置跟着走。写不进去(目录只读)时只在当前进程内生效,不报错。
+- `i18n.py --selftest` 会断言两种语言的**键集合与占位符名称完全一致** ——
+  漏一条文案或写错一个 `{placeholder}` 会静默退回英文,只有显式检查才能发现。
+- 界面层自检**先固定语言再断言**,并在结束时还原:否则用户在中文界面下跑自检会莫名失败。
 
 ### 关键实现决定
 
@@ -302,11 +318,13 @@ OpenCode · 运行中 v2.0.32                ← 禁用标签行
 
 ## 验证方式
 
+- `python i18n.py --selftest` —— 两种语言的键集合/占位符一致性、切换生效、非法代码退回默认、容错。
 - `python opencode_service.py --selftest` —— 不开 GUI：真实连接一次服务并打印状态；对 `classify()` 喂四种构造数据做断言；
   第 8 节真的起 cmd，验证 6 种刁钻目录名原样到达目标程序（防引号/元字符回归）；
   第 10 节验证 CLI 探测失败不会被永久缓存。
 - `python opencode_tray.pyw --selftest` —— 不开窗口：菜单接线（防 `'str' object is not callable` 回归）、
-  菜单已移除「打开日志」、状态变化时会重建菜单、**用 `GetMenuState` 查渲染层的灰/亮**、看门狗。
+  菜单已移除「打开日志」、语言子菜单、状态变化时会重建菜单、
+  **用 `GetMenuState` 查渲染层的灰/亮**、语言切换后菜单与 tooltip 真的变化、看门狗、解释器固定。
 - `python win_shortcut.py --selftest` —— 在桌面真建一个 `.lnk`，用 COM 读回校验（含中文与空格的往返），再删除。
 - `python opencode_tray.pyw --demo 5` —— 托盘显示 5 秒后自动退出（沿用 `sort_visualizer.py --demo` 的项目惯例），用于自动化验证 GUI 能启动。
 - **注意解释器**：托盘由桌面快捷方式 / 开机自启以**绝对路径** `F:\Tools\Conda\pythonw.EXE` 启动，

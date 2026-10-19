@@ -3,16 +3,21 @@
 A Windows system-tray indicator for the **OpenCode** background service.
 
 Right-click the tray icon to see whether the service is up, restart / stop / start it,
-and jump straight into any of your OpenCode sessions.
+and jump straight into any of your OpenCode sessions. The interface is available in
+**English** (default) and **简体中文** — switch it from the *Language* submenu; the choice
+is remembered in `settings.json`.
 
 ```
-OpenCode 服务 · 运行中 v2.0.32
-─────────────────────────────
-会话                        ▸  ● OpenCode Windows 托盘…
-─────────────────────────────
-重启服务 / 停止服务 / 启动服务
-─────────────────────────────
-退出
+OpenCode Service: Running v2.0.32
+─────────────────────────────────
+Sessions                          ▸  ● OpenCode Windows tray…
+─────────────────────────────────
+Restart service / Stop service / Start service
+─────────────────────────────────
+Language                          ▸  ● English
+                                     ○ 简体中文
+─────────────────────────────────
+Quit
 ```
 
 ## What it does
@@ -22,6 +27,7 @@ OpenCode 服务 · 运行中 v2.0.32
 - **Session submenu** — the 15 most recent sessions across *all* projects, running ones first,
   with a relative timestamp. Click one to attach to it in a new terminal window.
 - **Service lifecycle** — restart / stop / start, straight from the menu.
+- **Two languages** — English by default, Simplified Chinese one click away.
 - **Runs in the tray, not in your way** — a single instance (named mutex), and it can install
   itself to start at logon plus a desktop shortcut.
 
@@ -53,7 +59,9 @@ python  opencode_tray.pyw --install-shortcut  # desktop shortcut
 python  opencode_tray.pyw --uninstall-shortcut
 ```
 
-On a Chinese Windows install you can also just double-click `启动OpenCode托盘.cmd`.
+You can also double-click `start-tray.cmd`. It checks that the `pythonw` on your `PATH` can
+import `pystray` and `Pillow` before launching, because `pythonw` has no console and would
+otherwise fail silently.
 
 The icon it draws is written to `opencode_tray.ico` (gitignored) when you create a shortcut,
 so no binary asset is committed.
@@ -64,17 +72,19 @@ so no binary asset is committed.
 |---|---|
 | `opencode_service.py` | Data layer: service health, session list, lifecycle, launching. **Standard library only.** |
 | `opencode_tray.pyw`  | Tray UI: icon, menu, polling, autostart, desktop shortcut. Needs `pystray` + `Pillow`. |
+| `i18n.py`            | Message catalogue (English / Simplified Chinese) and the saved preference. Standard library only. |
 | `win_shortcut.py`    | Creates and reads Windows `.lnk` files through raw ctypes COM. Standard library only. |
 | `docs/design.md`     | Design notes, including the Windows-specific traps described below. |
 
-The split is deliberate: both `opencode_service.py` and `win_shortcut.py` are testable without a
-display, and their `--selftest` runs on a machine with no `pystray` installed.
+The split is deliberate: `opencode_service.py`, `i18n.py` and `win_shortcut.py` are all testable
+without a display, and their `--selftest` runs on a machine with no `pystray` installed.
 
 ## Verifying it works
 
 ```
+python  i18n.py             --selftest   # 13 checks, incl. both catalogues defining the same keys
 python  opencode_service.py --selftest   # 35 checks, incl. real end-to-end argument fidelity
-python  opencode_tray.pyw   --selftest   # 28 checks, incl. the rendered Win32 menu state
+python  opencode_tray.pyw   --selftest   # 44 checks, incl. the rendered Win32 menu state
 python  win_shortcut.py     --selftest   # 7 checks, .lnk round-trip incl. non-ASCII
 ```
 
@@ -103,6 +113,14 @@ Several things here look odd until you know why. All of them are documented in `
   tracking and breaks hover highlighting).
 - **Autostart uses the registry, not the Startup folder**, because the Startup folder on some
   hardened machines refuses `.cmd` / `.bat` / `.vbs` outright.
+- **The autostart entry and the shortcut pin the interpreter explicitly** (the `pythonw` next to
+  the Python that ran the install), because `shutil.which` picks a different Python on machines
+  with several installs.
+
+## Adding a language
+
+Add a block to `_STRINGS` in `i18n.py` and an entry to `LANGUAGE_NAMES`. `i18n.py --selftest`
+fails if the new block does not define exactly the same keys and placeholders as the others.
 
 ## License
 

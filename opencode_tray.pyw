@@ -37,6 +37,7 @@ import pystray
 from PIL import Image, ImageDraw
 from pystray import Menu, MenuItem
 
+import i18n
 import opencode_service as svc
 import win_shortcut
 
@@ -46,7 +47,12 @@ HAS_CONSOLE = sys.stdout is not None
 if not HAS_CONSOLE:
     sys.stdout = sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
-APP_NAME = "OpenCode 服务"
+
+def app_name() -> str:
+    """应用名(随语言变化,所以不能是常量)。"""
+    return i18n._("app.name")
+
+
 POLL_SECONDS = 3.0     # 状态轮询间隔
 MESSAGE_TTL = 8.0      # 菜单里"上次操作结果"的保留时长
 BUSY_TIMEOUT = 120.0   # 看门狗:操作占用超过此时长就放行菜单,避免永久变灰
@@ -121,13 +127,13 @@ def acquire_single_instance():
 
     if not handle:
         # 拿不到互斥体本身:不阻塞用户,放行并说明
-        return True, f"单实例检查不可用(错误码 {last_error}),继续启动"
+        return True, i18n._("single.check_unavailable", code=last_error)
     _mutex_handle = handle
 
     if last_error == ERROR_ALREADY_EXISTS:
         kernel32.CloseHandle(handle)
         _mutex_handle = None
-        return False, "OpenCode 托盘已经在运行了"
+        return False, i18n._("single.already_running")
     return True, ""
 
 
@@ -142,7 +148,10 @@ def acquire_single_instance():
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_VALUE_NAME = "OpenCodeTray"
-DESKTOP_SHORTCUT_NAME = "OpenCode 托盘指示器.lnk"
+# 快捷方式名字保持语言中立:它由 --install-shortcut 写进桌面,
+# 若随语言变化,切换语言会留下一堆孤儿快捷方式。旧的中文名会在安装时顺手清掉。
+DESKTOP_SHORTCUT_NAME = "OpenCode Tray.lnk"
+LEGACY_SHORTCUT_NAMES = ("OpenCode 托盘指示器.lnk",)
 
 # 菜单里的生命周期动作:kind -> 可调用对象(返回 (是否成功, 说明))
 SERVICE_ACTIONS = {
@@ -196,25 +205,21 @@ def install_startup():
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
             winreg.SetValueEx(key, RUN_VALUE_NAME, 0, winreg.REG_SZ, command)
     except OSError as exc:
-        return False, f"写入开机自启失败:{exc}"
-    return True, (
-        f"已装上开机自启:\nHKCU\\{RUN_KEY}\\{RUN_VALUE_NAME}\n\n"
-        f"{command}\n\n"
-        "可在「任务管理器 → 启动」里看到并临时禁用。"
-    )
+        return False, i18n._("startup.install_failed", error=exc)
+    return True, i18n._("startup.installed", key=RUN_KEY, name=RUN_VALUE_NAME, command=command)
 
 
 def uninstall_startup():
     """移除注册表自启。返回 (是否成功, 说明)。"""
     import winreg
     if startup_status() is None:
-        return True, "开机自启本来就没有安装"
+        return True, i18n._("startup.not_installed")
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
             winreg.DeleteValue(key, RUN_VALUE_NAME)
     except OSError as exc:
-        return False, f"移除开机自启失败:{exc}"
-    return True, "已移除开机自启"
+        return False, i18n._("startup.remove_failed", error=exc)
+    return True, i18n._("startup.removed")
 
 
 # ---------------------------------------------------------------------------
@@ -232,38 +237,58 @@ def install_shortcut():
     try:
         icon = ensure_icon_file()
         target = shortcut_path()
+        # 顺手清掉旧的中文名快捷方式,免得留下孤儿
+        legacy_removed = [path for path in _legacy_shortcut_paths() if _remove_file(path)]
         win_shortcut.create_shortcut(
             target,
             target=_preferred_pythonw(),
             arguments=f'"{script}"',
             working_dir=script.parent,
-            description="OpenCode 后台服务状态托盘指示器",
+            description=i18n._("app.name"),
             icon_path=icon,
         )
     except (OSError, ValueError) as exc:
-        return False, f"创建桌面快捷方式失败:{exc}"
-    return True, f"已在桌面创建快捷方式:\n{target}\n\n图标:{icon}"
+        return False, i18n._("shortcut.install_failed", error=exc)
+    message = i18n._("shortcut.installed", path=target, icon=icon)
+    if legacy_removed:
+        message += "\n\n" + i18n._("shortcut.removed", path=legacy_removed[0])
+    return True, message
+
+
+def _legacy_shortcut_paths():
+    desktop = Path(win_shortcut.desktop_dir())
+    return [desktop / name for name in LEGACY_SHORTCUT_NAMES]
+
+
+def _remove_file(path) -> bool:
+    try:
+        path.unlink()
+        return True
+    except OSError:
+        return False
 
 
 def uninstall_shortcut():
-    """删除桌面快捷方式。返回 (是否成功, 说明)。"""
-    target = shortcut_path()
-    if not target.exists():
-        return True, "桌面快捷方式本来就没有"
-    try:
-        target.unlink()
-    except OSError as exc:
-        return False, f"删除桌面快捷方式失败:{exc}"
-    return True, f"已删除桌面快捷方式:{target}"
+    """删除桌面快捷方式(含旧名字的)。返回 (是否成功, 说明)。"""
+    targets = [shortcut_path()] + [p for p in _legacy_shortcut_paths() if p.exists()]
+    existing = [p for p in targets if p.exists()]
+    if not existing:
+        return True, i18n._("shortcut.not_installed")
+    for path in existing:
+        try:
+            path.unlink()
+        except OSError as exc:
+            return False, i18n._("shortcut.remove_failed", error=exc)
+    return True, i18n._("shortcut.removed", path=existing[0])
 
 
-def _inform(text: str, title: str = APP_NAME):
+def _inform(text: str, title: str | None = None):
     """有控制台就打印;以 pythonw 运行时没有控制台,改用消息框。"""
     if HAS_CONSOLE:
         print(text)
         return
     try:
-        ctypes.windll.user32.MessageBoxW(None, text, title, 0x40)
+        ctypes.windll.user32.MessageBoxW(None, text, title or app_name(), 0x40)
     except Exception:
         pass
 
@@ -276,7 +301,7 @@ class TrayApp:
     """托盘界面。状态由后台线程轮询,菜单每次弹出时动态生成。"""
 
     def __init__(self):
-        self.status = svc.ServerStatus(state=svc.NO_SERVICE, detail="正在探测…")
+        self.status = svc.ServerStatus(state=svc.NO_SERVICE, detail=i18n._("state.probing"))
         self.sessions = None            # list[SessionItem] | None
         # CLI 状态:None=尚未确定,True/False=已确定。
         # 不在 __init__ 里同步解析 —— 冷启动时 `opencode --version` 要好几秒,
@@ -300,7 +325,7 @@ class TrayApp:
         self.icon = pystray.Icon(
             "opencode-service",
             draw_icon(ICON_COLORS[svc.NO_SERVICE]),
-            APP_NAME,
+            app_name(),
             Menu(self._menu),
         )
         self._guard_menu_display()
@@ -322,7 +347,7 @@ class TrayApp:
             try:
                 self.refresh()
             except Exception as exc:  # 轮询线程绝不能因单次异常死掉
-                self._say(f"探测出错:{exc}")
+                self._say(i18n._("poll.failed", error=exc))
             self._stop.wait(POLL_SECONDS)
 
     def refresh(self):
@@ -439,6 +464,7 @@ class TrayApp:
                 self._busy_now(),
                 message,
                 sessions,
+                i18n.current(),      # 切语言必须让菜单重建
             )
 
     # --- 菜单内容 ---
@@ -449,22 +475,57 @@ class TrayApp:
             items.append(MenuItem(lambda item: self.message, None, enabled=False))
         items += [
             Menu.SEPARATOR,
-            MenuItem("会话", Menu(self._session_menu)),
+            MenuItem(lambda item: i18n._("menu.sessions"), Menu(self._session_menu)),
             Menu.SEPARATOR,
-            MenuItem("重启服务", self._make_action("restart"), enabled=self._lifecycle_enabled),
-            MenuItem("停止服务", self._make_action("stop"), enabled=self._lifecycle_enabled),
-            MenuItem("启动服务", self._make_action("start"), enabled=self._lifecycle_enabled),
+            MenuItem(lambda item: i18n._("menu.restart"),
+                     self._make_action("restart"), enabled=self._lifecycle_enabled),
+            MenuItem(lambda item: i18n._("menu.stop"),
+                     self._make_action("stop"), enabled=self._lifecycle_enabled),
+            MenuItem(lambda item: i18n._("menu.start"),
+                     self._make_action("start"), enabled=self._lifecycle_enabled),
             Menu.SEPARATOR,
-            MenuItem("退出", self._on_quit),
+            MenuItem(lambda item: i18n._("menu.language"), Menu(self._language_menu)),
+            Menu.SEPARATOR,
+            MenuItem(lambda item: i18n._("menu.quit"), self._on_quit),
         ]
         return items
 
     def _header_text(self):
         with self._lock:
-            text = f"{APP_NAME} · {self.status.label}"
+            text = f"{app_name()} · {self.status.label}"
             if self.status.state == svc.RUNNING and self.status.version:
                 text += f" v{self.status.version}"
         return text
+
+    def _language_menu(self):
+        """
+        语言子菜单。
+
+        语言名一律用**自称**(English / 简体中文),不随界面语言翻译 ——
+        界面是英文时也该能认出"简体中文"那一项,反之亦然。
+        用 radio + checked 做成单选外观。
+        """
+        for code, name in i18n.language_names().items():
+            yield MenuItem(
+                name,
+                self._make_language_action(code),
+                radio=True,
+                checked=lambda item, code=code: i18n.current() == code,
+            )
+
+    def _make_language_action(self, code):
+        def handler(icon, item):
+            self._set_language(code)
+        return handler
+
+    def _set_language(self, code):
+        """切换语言:持久化 + 让菜单与 tooltip 立刻反映新语言。"""
+        applied = i18n.set_language(code)
+        self._say(i18n._("menu.language") + ": " + i18n.language_names()[applied])
+        try:
+            self._sync_icon()      # 更新 tooltip 与菜单文本
+        except Exception:
+            pass
 
     def _busy_now(self):
         """
@@ -488,25 +549,25 @@ class TrayApp:
         with self._lock:
             sessions = self.sessions
         if sessions is None:
-            yield MenuItem("(会话列表不可用)", None, enabled=False)
+            yield MenuItem(lambda item: i18n._("sessions.unavailable"), None, enabled=False)
             return
         if not sessions:
-            yield MenuItem("(暂无会话)", None, enabled=False)
+            yield MenuItem(lambda item: i18n._("sessions.empty"), None, enabled=False)
             return
         for session in sessions:
             yield MenuItem(session.menu_label(), self._make_session_action(session))
         yield Menu.SEPARATOR
-        yield MenuItem("刷新", self._on_refresh)
+        yield MenuItem(lambda item: i18n._("menu.refresh"), self._on_refresh)
 
     def _tooltip(self):
         text = self.status.tooltip()
         if self.status.is_running and self.sessions is not None:
             active = sum(1 for s in self.sessions if s.running)
-            text += f" · 活跃 {active}"
+            text += i18n._("tooltip.active", count=active)
         if self.has_cli is False:
-            text += " · 未找到 CLI(服务操作不可用)"
+            text += i18n._("tooltip.cli_missing")
         if self._busy_now():
-            text += " · 正在执行操作…"
+            text += i18n._("tooltip.busy")
         return text
 
     # --- 动作 ---
@@ -559,7 +620,7 @@ class TrayApp:
         self.message = text
         self.message_until = time.time() + MESSAGE_TTL
         try:
-            self.icon.notify(text, APP_NAME)
+            self.icon.notify(text, app_name())
         except Exception:
             pass  # 气泡通知不可用时静默降级,菜单里仍能看到结果
 
@@ -600,13 +661,27 @@ def _rendered_states(app):
 
 
 def selftest() -> int:
-    """自检:菜单接线、菜单刷新、灰亮规则、看门狗。不开窗口、不触碰服务。"""
+    """自检:菜单接线、菜单刷新、灰亮规则、看门狗、语言切换。不开窗口、不触碰服务。"""
     results = []
 
     def check(label, ok, detail=""):
         print(f"  [{'PASS' if ok else 'FAIL'}] {label}" + (f" — {detail}" if detail else ""))
         results.append(ok)
 
+    # 断言必须与"用户当前存的语言"无关,所以先固定语言,结束时还原。
+    # 否则用户在中文界面下跑自检会莫名其妙地失败。
+    original_language = i18n.current()
+    i18n.set_language("en", persist=False)
+    # 断言里统一走 i18n,换语言也不会失效
+    L = i18n._
+
+    try:
+        return _selftest_body(check, L, results)
+    finally:
+        i18n.set_language(original_language, persist=False)
+
+
+def _selftest_body(check, L, results) -> int:
     print("== 1. 生命周期动作是可调用对象 ==")
     for kind in ("restart", "stop", "start"):
         check(f"{kind} -> callable(回归:'str' object is not callable)",
@@ -622,9 +697,21 @@ def selftest() -> int:
 
     print("== 2. 菜单结构 ==")
     texts = [_item_text(app, item) for item in app.icon.menu.items]
-    for want in ("会话", "重启服务", "停止服务", "启动服务", "退出"):
-        check(f"菜单含 {want}", want in texts)
-    check("已移除「打开日志」", not any("日志" in t for t in texts))
+    for key in ("menu.sessions", "menu.restart", "menu.stop", "menu.start",
+                "menu.language", "menu.quit"):
+        check(f"菜单含 {L(key)}", L(key) in texts)
+    check("已移除「打开日志」",
+          not any("日志" in t or "log" in t.lower() for t in texts), str(texts))
+
+    print("== 2b. 语言子菜单(简体中文 / English,语言名用自称) ==")
+    submenu = [i for i in app.icon.menu.items
+               if _item_text(app, i) == L("menu.language")]
+    check("存在语言子菜单", len(submenu) == 1)
+    language_items = [_item_text(app, i) for i in submenu[0].submenu.items] if submenu else []
+    check("两个选项且用自称", language_items == ["English", "简体中文"], str(language_items))
+
+    checked = [getattr(i, "checked", False) for i in submenu[0].submenu.items] if submenu else []
+    check("当前语言被单选勾选", list(checked) == [True, False], str(checked))
 
     print("== 3. 菜单随状态刷新(pystray 在 Windows 上不会自动刷新) ==")
     check("已装上「菜单显示中」守卫", app._guard_menu_display() is not False)
@@ -646,6 +733,7 @@ def selftest() -> int:
     app._sync_icon()
     check("显示期间不重建", len(rebuilds) == before, f"{len(rebuilds)}")
     check("显示期间记为待重建", app._menu_rebuild_pending is True)
+
 
     # 模拟菜单关闭:守卫的 finally 会补上挂起的重建
     app._menu_open = False
@@ -681,9 +769,11 @@ def selftest() -> int:
     app.has_cli = False
     app.icon.update_menu()
     off = (_rendered_states(app) or {})
-    check("可点状态下「重启服务」是亮的", on.get("重启服务") is False, str(on.get("重启服务")))
-    check("确无 CLI 时「重启服务」变灰", off.get("重启服务") is True, str(off.get("重启服务")))
-    check("灰/亮确实随状态改变", on.get("重启服务") != off.get("重启服务"))
+    check("可点状态下「重启服务」是亮的", on.get(L("menu.restart")) is False,
+          str(on.get(L("menu.restart"))))
+    check("确无 CLI 时「重启服务」变灰", off.get(L("menu.restart")) is True,
+          str(off.get(L("menu.restart"))))
+    check("灰/亮确实随状态改变", on.get(L("menu.restart")) != off.get(L("menu.restart")))
 
     print("== 5. 灰亮规则与看门狗 ==")
     app.has_cli = True
@@ -697,14 +787,46 @@ def selftest() -> int:
     app.busy = True
     app._busy_since = time.monotonic()
     check("执行中防连点", app._lifecycle_enabled(None) is False)
-    check("执行中 tooltip 有说明", "正在执行操作" in app._tooltip())
+    check("执行中 tooltip 有说明", L("tooltip.busy") in app._tooltip())
     app._busy_since = time.monotonic() - BUSY_TIMEOUT - 1
     check("卡死超时后看门狗放行", app._lifecycle_enabled(None) is True)
-    check("卡死后 tooltip 不再说执行中", "正在执行操作" not in app._tooltip())
+    check("卡死后 tooltip 不再说执行中", L("tooltip.busy") not in app._tooltip())
 
     app.busy = False
     app.has_cli = False
-    check("确无 CLI 时 tooltip 说明原因", "未找到 CLI" in app._tooltip())
+    check("确无 CLI 时 tooltip 说明原因", L("tooltip.cli_missing") in app._tooltip())
+
+    print("== 5b. 切换语言后菜单与 tooltip 真的变了 ==")
+    import i18n as _i18n
+    app.has_cli = True
+    _i18n.set_language("en", persist=False)
+    app.icon.update_menu()
+    english_menu = [_item_text(app, i) for i in app.icon.menu.items]
+    english_tooltip = app._tooltip()
+    _i18n.set_language("zh-Hans", persist=False)
+    app.icon.update_menu()
+    chinese_menu = [_item_text(app, i) for i in app.icon.menu.items]
+    chinese_tooltip = app._tooltip()
+
+    check("菜单文本随语言切换", english_menu != chinese_menu,
+          f"{english_menu[:2]} vs {chinese_menu[:2]}")
+    check("英文菜单取自英文表", "Sessions" in english_menu, str(english_menu))
+    check("中文菜单取自中文表", "会话" in chinese_menu, str(chinese_menu))
+    check("tooltip 随语言切换", english_tooltip != chinese_tooltip,
+          f"{english_tooltip!r} vs {chinese_tooltip!r}")
+    check("标题行也随语言切换", english_menu[0] != chinese_menu[0],
+          f"{english_menu[0]!r} vs {chinese_menu[0]!r}")
+
+    # 单选勾选要跟着走
+    submenu = [i for i in app.icon.menu.items if _item_text(app, i) == _i18n._("menu.language")]
+    checked_zh = [bool(getattr(i, "checked", False)) for i in submenu[0].submenu.items]
+    check("切到中文后单选勾选中文", checked_zh == [False, True], str(checked_zh))
+
+    print("== 5c. 默认语言是 English(用户要求) ==")
+    import importlib
+    importlib.reload(_i18n)
+    check("无 settings.json 时默认 en", _i18n.DEFAULT_LANGUAGE == "en")
+    check("默认语言名是 English", _i18n.LANGUAGE_NAMES["en"] == "English")
 
     print("== 6. 解释器固定(自启/快捷方式不能靠 PATH 猜) ==")
     preferred = _preferred_pythonw()
@@ -757,22 +879,20 @@ def main(argv=None) -> int:
     # 单实例保护:双击两次不应出现两个托盘图标
     acquired, reason = acquire_single_instance()
     if not acquired:
-        _inform(
-            f"{reason}。\n\n"
-            "请查看任务栏右下角的通知区域(可能收在「显示隐藏的图标」里),"
-            "右键图标可以重启 / 停止 / 启动服务或查看会话。"
-        )
+        _inform(f"{reason}\n\n{i18n._('single.hint')}")
         return 1
 
     app = TrayApp()
     app.run(args.demo)
 
     if args.demo:
-        _inform(
-            f"托盘已运行 {args.demo:g} 秒并正常退出"
-            f"(最终状态 {app.status.label},轮询 {app.polls} 次,"
-            f"会话 {len(app.sessions) if app.sessions is not None else '不可用'})"
-        )
+        _inform(i18n._(
+            "demo.summary",
+            seconds=args.demo,
+            state=app.status.label,
+            polls=app.polls,
+            sessions=len(app.sessions) if app.sessions is not None else "n/a",
+        ))
     return 0
 
 

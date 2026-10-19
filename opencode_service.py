@@ -34,6 +34,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+import i18n
+
 # 以 pythonw 运行时没有 stdout/stderr,必须容错
 for _stream in (sys.stdout, sys.stderr):
     if _stream is not None:
@@ -57,19 +59,31 @@ HTTP_OK = "ok"
 HTTP_UNAUTHORIZED = "unauthorized"
 HTTP_UNREACHABLE = "unreachable"
 
-# 状态 -> 中文说明
-STATE_LABELS = {
-    RUNNING: "运行中",
-    UNREACHABLE: "无响应",
-    UNAUTHORIZED: "认证失败",
-    NO_SERVICE: "未运行",
+# 状态 -> 文案键(实际文案见 i18n.py,随语言切换)
+STATE_KEYS = {
+    RUNNING: "state.running",
+    UNREACHABLE: "state.unreachable",
+    UNAUTHORIZED: "state.unauthorized",
+    NO_SERVICE: "state.no_service",
 }
 
-STATE_DETAILS = {
-    UNREACHABLE: "无响应(可能已崩溃)",
-    UNAUTHORIZED: "认证失败(service.json 已过期)",
-    NO_SERVICE: "未运行(未安装 / 已禁用)",
+DETAIL_KEYS = {
+    UNREACHABLE: "state.detail.unreachable",
+    UNAUTHORIZED: "state.detail.unauthorized",
+    NO_SERVICE: "state.detail.no_service",
 }
+
+
+def state_label(state: str) -> str:
+    """状态的中文/英文名称。"""
+    return i18n._(STATE_KEYS.get(state, state))
+
+
+def state_detail(state: str) -> str:
+    """状态的补充说明(为什么不可用)。"""
+    key = DETAIL_KEYS.get(state)
+    return i18n._(key) if key else ""
+
 
 DEFAULT_TIMEOUT = 5.0   # 单次 HTTP 请求超时(秒)
 SESSION_LIMIT = 15      # 托盘菜单里最多列出的会话数
@@ -110,16 +124,17 @@ class ServerStatus:
 
     @property
     def label(self) -> str:
-        return STATE_LABELS.get(self.state, self.state)
+        return state_label(self.state)
 
     def tooltip(self) -> str:
-        head = f"OpenCode 服务:{self.label}"
+        head = i18n._("tooltip.base", app=i18n._("app.name"), label=self.label)
         if self.state == RUNNING:
-            head += f" v{self.version}" if self.version else ""
+            if self.version:
+                head += i18n._("tooltip.version", version=self.version)
             if self.pid:
-                head += f" · PID {self.pid}"
+                head += i18n._("tooltip.pid", pid=self.pid)
         elif self.detail:
-            head += f" — {self.detail}"
+            head += i18n._("tooltip.detail", detail=self.detail)
         return head
 
 
@@ -134,7 +149,7 @@ class SessionItem:
 
     def menu_label(self) -> str:
         """菜单里显示的文本。"""
-        title = self.title.strip() or "(无标题)"
+        title = self.title.strip() or i18n._("session.untitled")
         if len(title) > TITLE_MAX:
             title = title[:TITLE_MAX] + "…"
         mark = "●" if self.running else "○"
@@ -146,17 +161,15 @@ class SessionItem:
 
 
 def _ago(epoch_ms: int) -> str:
-    """把 epoch 毫秒转成"3 分钟前"这类相对时间。"""
+    """把 epoch 毫秒转成"3 分钟前" / "3m ago" 这类相对时间。"""
     delta = time.time() - epoch_ms / 1000.0
-    if delta < 0:
-        return "刚刚"
     if delta < 60:
-        return "刚刚"
+        return i18n._("time.just_now")
     if delta < 3600:
-        return f"{int(delta // 60)} 分钟前"
+        return i18n._("time.minutes_ago", count=int(delta // 60))
     if delta < 86400:
-        return f"{int(delta // 3600)} 小时前"
-    return f"{int(delta // 86400)} 天前"
+        return i18n._("time.hours_ago", count=int(delta // 3600))
+    return i18n._("time.days_ago", count=int(delta // 86400))
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +257,7 @@ def probe_server(timeout: float = DEFAULT_TIMEOUT, path=None) -> ServerStatus:
         version=version,
         pid=pid,
         url=url,
-        detail="" if state == RUNNING else STATE_DETAILS.get(state, ""),
+        detail="" if state == RUNNING else state_detail(state),
     )
 
 
@@ -282,7 +295,7 @@ def list_sessions(limit: int = SESSION_LIMIT, timeout: float = DEFAULT_TIMEOUT, 
         stamp = row.get("time") or {}
         items.append(SessionItem(
             id=row["id"],
-            title=row.get("title") or "(无标题)",
+            title=row.get("title") or i18n._("session.untitled"),
             directory=(row.get("location") or {}).get("directory") or "",
             running=row["id"] in running,
             updated=int(stamp.get("updated") or stamp.get("created") or 0),
@@ -377,7 +390,7 @@ def _run_service(subcommand: str, timeout: float = CLI_TIMEOUT):
     """执行 `opencode service <subcommand>`。返回 (是否成功, 说明)。"""
     cli = resolve_cli()
     if cli is None:
-        return False, "找不到 OpenCode V2 CLI(opencode2 / opencode)"
+        return False, i18n._("cli.not_found")
     try:
         proc = subprocess.run(
             ["cmd.exe", "/c", cli, "service", subcommand],
@@ -385,15 +398,16 @@ def _run_service(subcommand: str, timeout: float = CLI_TIMEOUT):
             encoding="utf-8", errors="replace", creationflags=_NO_WINDOW,
         )
     except subprocess.TimeoutExpired:
-        return False, f"service {subcommand} 超时({int(timeout)} 秒)"
+        return False, i18n._("service.timeout", command=subcommand, seconds=int(timeout))
     except (OSError, subprocess.SubprocessError) as exc:
-        return False, f"service {subcommand} 执行失败:{exc}"
+        return False, i18n._("service.failed_exec", command=subcommand, error=exc)
 
     if proc.returncode != 0:
         lines = [ln for ln in ((proc.stderr or "") + (proc.stdout or "")).splitlines() if ln.strip()]
-        tail = lines[-1] if lines else "无输出"
-        return False, f"service {subcommand} 失败(返回码 {proc.returncode}):{tail}"
-    return True, f"service {subcommand} 完成"
+        tail = lines[-1] if lines else "(no output)"
+        return False, i18n._("service.failed_code", command=subcommand,
+                             code=proc.returncode, tail=tail)
+    return True, i18n._("service.done", command=subcommand)
 
 
 def restart_server():
@@ -492,21 +506,21 @@ def open_session(session: SessionItem):
     """在新终端窗口里接管该会话(工作目录设为会话所属目录)。返回 (是否成功, 说明)。"""
     cli = resolve_cli()
     if cli is None:
-        return False, "找不到 OpenCode V2 CLI(opencode2 / opencode)"
+        return False, i18n._("cli.not_found")
 
     launcher = _launcher_path(session.id)
     try:
         _write_launcher(launcher, build_launcher_script(cli, session.id, session.directory))
     except OSError as exc:
-        return False, f"写入会话启动器失败:{exc}"
+        return False, i18n._("session.launcher_write_failed", error=exc)
 
     cwd = session.directory if session.directory and os.path.isdir(session.directory) else None
     argv, flags = build_terminal_command(launcher)
     try:
         subprocess.Popen(argv, cwd=cwd, creationflags=flags)
     except OSError as exc:
-        return False, f"打开终端失败:{exc}"
-    return True, f"已在新的终端窗口打开会话 {session.id[-6:]}"
+        return False, i18n._("session.terminal_failed", error=exc)
+    return True, i18n._("session.opened", id=session.id[-6:])
 
 
 # ---------------------------------------------------------------------------
@@ -645,7 +659,7 @@ def selftest() -> int:
     status = probe_server()
     print(f"  状态={status.label} version={status.version} pid={status.pid} url={status.url}")
     print(f"  tooltip: {status.tooltip()}")
-    results.append(_check("返回合法状态", status.state in STATE_LABELS))
+    results.append(_check("返回合法状态", status.state in STATE_KEYS))
 
     print("== 4. list_sessions() 真实会话列表 ==")
     sessions = list_sessions()
