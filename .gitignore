@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+# 由 opencode_tray.pyw --install-shortcut 现画的托盘图标(生成物)
+opencode_tray.ico
