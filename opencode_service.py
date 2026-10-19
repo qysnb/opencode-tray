@@ -13,7 +13,7 @@ OpenCode 后台服务探测层(数据层,不依赖任何 GUI)
 
 依赖: 无(仅标准库)。GUI 部分见 opencode_tray.pyw。
 
-设计要点(详见 docs/superpowers/specs/2026-10-19-opencode-server-tray-design.md):
+设计要点(详见 docs/design.md):
   - 探测**不走** `opencode api`:该命令在无健康服务时会自动启动服务,会让调用方产生副作用。
   - 会话列表用 HTTP `/api/session`(全局)而非 `opencode session list`(仅当前项目)。
   - 鉴权只有 HTTP Basic 可用,用户名固定 "opencode"。

@@ -2,7 +2,7 @@
 
 - 日期：2026-10-19
 - 状态：已批准（方案 A：读 `service.json` + HTTP 探测）
-- 范围：`opencode_test` 项目新增文件；只读本机 OpenCode 服务的状态文件与 API
+- 范围：Windows 系统托盘指示器项目（`opencode-tray/`），只读本机 OpenCode 服务的状态文件与 API
 
 ## 目标
 

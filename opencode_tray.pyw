@@ -17,7 +17,7 @@ OpenCode 后台服务托盘指示器
     绿(实心) 服务运行中   灰 服务未运行   红 无响应或认证失败
 
 依赖: pystray, Pillow(数据层 opencode_service.py 与快捷方式层 win_shortcut.py 仅用标准库)
-设计: docs/superpowers/specs/2026-10-19-opencode-server-tray-design.md
+设计: docs/design.md
 
 注意: 探测不走 `opencode api`(它在无服务时会自动启动服务,产生副作用),
       因此本程序是纯观察者,只有你主动点菜单才会改变服务状态。
@@ -152,11 +152,30 @@ SERVICE_ACTIONS = {
 }
 
 
+def _preferred_pythonw() -> str:
+    """
+    自启与快捷方式该用哪个 pythonw。
+
+    优先「当前正在运行本脚本的解释器」旁边的 pythonw —— 这样**安装时用的解释器**
+    与**以后启动时用的解释器**必然一致。
+
+    不用 `shutil.which("pythonw")`:PATH 上可能有多个 Python(本机实测有 Conda 3.13.5、
+    Python 3.14、以及 WindowsApps 的 PythonManager 垫片),`which` 的结果会随 PATH 变化,
+    可能选到一个没装 pystray 的解释器 —— 实测就选错了。
+    """
+    exe = Path(sys.executable)
+    if exe.name.lower() == "pythonw.exe" and exe.exists():
+        return str(exe)
+    sibling = exe.with_name("pythonw.exe")
+    if sibling.exists():
+        return str(sibling)
+    return shutil.which("pythonw") or str(exe)
+
+
 def _autostart_command() -> str:
     """登录时要执行的命令行:pythonw + 本脚本的绝对路径。"""
     script = Path(__file__).resolve()
-    pythonw = shutil.which("pythonw") or "pythonw"
-    return f'"{pythonw}" "{script}"'
+    return f'"{_preferred_pythonw()}" "{script}"'
 
 
 def startup_status():
@@ -210,13 +229,12 @@ def shortcut_path() -> Path:
 def install_shortcut():
     """在桌面创建快捷方式(带自绘图标)。返回 (是否成功, 说明)。"""
     script = Path(__file__).resolve()
-    pythonw = shutil.which("pythonw") or "pythonw"
     try:
         icon = ensure_icon_file()
         target = shortcut_path()
         win_shortcut.create_shortcut(
             target,
-            target=pythonw,
+            target=_preferred_pythonw(),
             arguments=f'"{script}"',
             working_dir=script.parent,
             description="OpenCode 后台服务状态托盘指示器",
@@ -687,6 +705,17 @@ def selftest() -> int:
     app.busy = False
     app.has_cli = False
     check("确无 CLI 时 tooltip 说明原因", "未找到 CLI" in app._tooltip())
+
+    print("== 6. 解释器固定(自启/快捷方式不能靠 PATH 猜) ==")
+    preferred = _preferred_pythonw()
+    check("解析出一个 pythonw 路径", bool(preferred), preferred)
+    check("优先与当前解释器同目录",
+          Path(preferred).parent == Path(sys.executable).parent,
+          f"{Path(preferred).parent} vs {Path(sys.executable).parent}")
+    check("自启命令用的是这个 pythonw",
+          _autostart_command().startswith(f'"{preferred}"'), _autostart_command())
+    check("自启命令指向本脚本",
+          str(Path(__file__).resolve()) in _autostart_command())
 
     passed, total = sum(results), len(results)
     print(f"\n自检结果:{passed}/{total} 通过")
