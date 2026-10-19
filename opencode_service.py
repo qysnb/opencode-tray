@@ -13,7 +13,7 @@ Usage:
 
 Dependencies: none (standard library only). The GUI lives in opencode_tray.pyw.
 
-Design notes (see docs/design.md):
+Design notes:
   - Probing never uses `opencode api`: that command auto-starts the service when none is
     healthy, which would give a read-only probe side effects.
   - The session list uses HTTP `/api/session` (global), not `opencode session list`

@@ -18,7 +18,7 @@ Icon meanings:
 
 Dependencies: pystray, Pillow (opencode_service.py, i18n.py and win_shortcut.py are
 standard library only)
-Design: docs/design.md
+Design: see README.md
 
 Note: probing never uses `opencode api` (it auto-starts the service, which would give a
             read-only probe side effects), so this program is a pure observer: the service only

@@ -1,11 +1,13 @@
 # opencode-tray
 
+**English** · [简体中文](README.zh-Hans.md)
+
 A Windows system-tray indicator for the **OpenCode** background service.
 
 Right-click the tray icon to see whether the service is up, restart / stop / start it,
 and jump straight into any of your OpenCode sessions. The interface is available in
-**English** (default) and **简体中文** — switch it from the *Language* submenu; the choice
-is remembered in `settings.json`.
+English (default) and Simplified Chinese — switch it from the *Language* submenu; the
+choice is remembered in `settings.json`.
 
 ```
 OpenCode Service: Running v2.0.32
@@ -40,12 +42,12 @@ you pick a menu item.
 - Windows 10/11
 - Python 3.9+ (developed and tested on 3.13.5)
 - [`pystray`](https://pypi.org/project/pystray/) and [`Pillow`](https://pypi.org/project/Pillow/)
-  — these are the only third-party dependencies, and only for the tray itself:
+  — the only third-party dependencies, and only for the tray itself:
   ```
   pip install pystray Pillow
   ```
 - OpenCode V2 installed locally (the `opencode2` command). The script locates it on `PATH`,
-  falling back to `%APPDATA%\npm`, and verifies the major version is 2.
+  falling back to `%APPDATA%\npm`, and verifies that the major version is 2.
 
 ## Usage
 
@@ -74,7 +76,7 @@ so no binary asset is committed.
 | `opencode_tray.pyw`  | Tray UI: icon, menu, polling, autostart, desktop shortcut. Needs `pystray` + `Pillow`. |
 | `i18n.py`            | Message catalogue (English / Simplified Chinese) and the saved preference. Standard library only. |
 | `win_shortcut.py`    | Creates and reads Windows `.lnk` files through raw ctypes COM. Standard library only. |
-| `docs/design.md`     | Design notes, including the Windows-specific traps described below. |
+| `start-tray.cmd`     | Convenience launcher that checks the dependencies first. |
 
 The split is deliberate: `opencode_service.py`, `i18n.py` and `win_shortcut.py` are all testable
 without a display, and their `--selftest` runs on a machine with no `pystray` installed.
@@ -94,14 +96,14 @@ awkward directory name arrives byte-identical, and they query the *rendered* Win
 
 ## Notes on the Windows quirks
 
-Several things here look odd until you know why. All of them are documented in `docs/design.md`:
+Several things here look odd until you know why.
 
 - **Session launching goes through a temporary `.cmd` file.** Passing a directory straight to
   `subprocess` mangles it: the MSVCRT quoting layer turns literal quotes into part of the value,
   and `&` / `^` in a path get eaten by `cmd`. Writing the command into a batch file lets `cmd`
   parse it exactly once. Measured across 7 awkward directory names, this was the only variant
   that preserved all of them.
-- **`cmd.exe` is preferred over PowerShell.** `subprocess`-with-`shell=True` broke all seven test
+- **`cmd.exe` is preferred over PowerShell.** `subprocess` with `shell=True` broke all seven test
   paths, and PowerShell's `Start-Process -ArgumentList` splits a directory containing spaces into
   several arguments.
 - **Sessions open in Windows Terminal** when `wt.exe` is present, and the launcher sets
@@ -109,8 +111,8 @@ Several things here look odd until you know why. All of them are documented in `
   falls back to degraded rendering.
 - **The menu is rebuilt explicitly.** `pystray` does not build the menu when it is shown on
   Windows — it reuses a cached `HMENU` — so the menu is refreshed whenever relevant state
-  changes, and never while it is on screen (rebuilding then destroys the handle Windows is
-  tracking and breaks hover highlighting).
+  changes, and never while it is on screen: rebuilding then destroys the handle Windows is
+  tracking and breaks hover highlighting.
 - **Autostart uses the registry, not the Startup folder**, because the Startup folder on some
   hardened machines refuses `.cmd` / `.bat` / `.vbs` outright.
 - **The autostart entry and the shortcut pin the interpreter explicitly** (the `pythonw` next to
