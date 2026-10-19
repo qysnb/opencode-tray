@@ -693,9 +693,19 @@ class TrayApp:
         threading.Thread(target=self._worker, args=(fn,), daemon=True).start()
 
     def _worker(self, fn):
+        """
+        Run one action off the message loop.
+
+        Actions may return (ok, message) - the service commands and open_session do - or
+        nothing at all, like refresh. Assuming the tuple shape unconditionally is what made
+        the Refresh item fail with "cannot unpack non-iterable NoneType object".
+        """
         try:
-            ok, message = fn()
-            self._say(message)
+            result = fn()
+            if isinstance(result, tuple) and len(result) == 2:
+                _, message = result
+                if message:
+                    self._say(message)
         except Exception as exc:
             self._say(i18n._("action.failed", error=exc))
         finally:
@@ -785,6 +795,23 @@ def _selftest_body(check, L, results) -> int:
         app._make_action(kind)(None, None)
     check("menu actions forward a callable",
           len(forwarded) == 3 and all(callable(f) for f in forwarded))
+
+    print("== 1b. Actions that return nothing are not an error (regression: Refresh) ==")
+    quiet = TrayApp()
+    reported = []
+    quiet._say = lambda text: reported.append(text)
+    quiet.refresh = lambda: None       # keep the network out of this check
+
+    quiet.busy = True
+    quiet._busy_since = time.monotonic()
+    quiet._worker(quiet.refresh)       # the Refresh item dispatches exactly this
+    check("a None-returning action raises nothing",
+          not any("failed" in m.lower() for m in reported), str(reported))
+    check("busy is cleared afterwards", quiet.busy is False)
+
+    quiet._worker(lambda: (True, "session opened"))
+    check("a tuple-returning action still reports", reported[-1:] == ["session opened"],
+          str(reported))
 
     print("== 2. Menu structure ==")
     texts = [_item_text(app, item) for item in app.icon.menu.items]
