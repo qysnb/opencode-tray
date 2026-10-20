@@ -57,6 +57,7 @@ def app_name() -> str:
 POLL_SECONDS = 3.0     # status poll interval
 MESSAGE_TTL = 8.0      # how long the last action result stays in the menu
 BUSY_TIMEOUT = 120.0   # watchdog: release the menu after this long, never grey forever
+ICON_REASSERT_DELAY = 3.0   # re-add the icon this long after startup (see _reassert_icon)
 ICON_SIZE = 64
 
 ICON_COLORS = {
@@ -406,7 +407,31 @@ class TrayApp:
         threading.Thread(target=self._poll_loop, daemon=True).start()
         if demo_seconds:
             threading.Timer(demo_seconds, self.shutdown).start()
+        # Re-assert the icon shortly after startup. When the Run key fires at logon the
+        # shell's notification area may not be ready yet, Shell_NotifyIcon(NIM_ADD) fails,
+        # and pystray ignores the return value - the process then keeps running with no
+        # icon at all, which is indistinguishable from "it did not start".
+        threading.Timer(ICON_REASSERT_DELAY, self._reassert_icon).start()
         self.icon.run()
+
+    def _reassert_icon(self):
+        """
+        Take the icon down and put it straight back, once, shortly after startup.
+
+        This is the cheap way to recover from a lost registration without probing the
+        shell. The finally block matters: the icon must never be left hidden, so if the
+        removal throws we still make sure it ends up visible.
+        """
+        try:
+            self.icon.visible = False
+            time.sleep(0.1)
+        except Exception:
+            pass
+        finally:
+            try:
+                self.icon.visible = True
+            except Exception:
+                pass
 
     def shutdown(self):
         self._stop.set()
@@ -812,6 +837,20 @@ def _selftest_body(check, L, results) -> int:
     quiet._worker(lambda: (True, "session opened"))
     check("a tuple-returning action still reports", reported[-1:] == ["session opened"],
           str(reported))
+
+    print("== 1c. Startup re-asserts the icon (a lost logon registration left no icon) ==")
+    check("re-assert delay is positive and short",
+          0 < ICON_REASSERT_DELAY <= 10, f"{ICON_REASSERT_DELAY}s")
+    probe_app = TrayApp()
+    try:
+        probe_app._reassert_icon()
+        reassert_ok, reassert_detail = True, ""
+    except Exception as exc:  # noqa: BLE001
+        reassert_ok, reassert_detail = False, f"{type(exc).__name__}: {exc}"
+    check("_reassert_icon does not raise", reassert_ok, reassert_detail)
+    check("it never leaves the icon hidden",
+          getattr(probe_app.icon, "visible", True) is not False,
+          repr(getattr(probe_app.icon, "visible", None)))
 
     print("== 2. Menu structure ==")
     texts = [_item_text(app, item) for item in app.icon.menu.items]
