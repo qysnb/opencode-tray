@@ -2,11 +2,18 @@
 
 [English](README.md) · **简体中文**
 
-一个面向 **OpenCode** 后台服务的 Windows 系统托盘指示器。
+一个面向 Windows 上 **OpenCode V2** 后台服务的托盘图标 —— 给长期泡在 OpenCode TUI 里的人用的
+（本项目就是在 Windows Terminal / PowerShell 7 里对着它开发的）。
 
-右键托盘图标即可看到服务是否在工作、重启 / 停止 / 启动服务，并直接跳进任意一个 OpenCode
-会话。界面提供 English（默认）与简体中文两种语言，可在 **Language / 语言** 子菜单切换，
-选择会记在 `settings.json` 里。
+OpenCode V2 用一个**后台 server** 管理所有对话。由此带来两件挺别扭的事，没有指示器时尤其明显：
+
+- **关掉所有窗口 ≠ 关掉 OpenCode。** server 还在跑，还会一直占着内存和 CPU，
+  而屏幕上没有任何东西告诉你它到底在不在。
+- **有时候必须重启那个 server** —— 比如装插件。常规做法是先退出 OpenCode，
+  再开个终端敲 `opencode service restart`；为了一条命令折腾一整套。
+
+它同时也是回到最近工作的最快方式：菜单里列出跨所有项目的最近会话，点一条就能在
+OpenCode 的 TUI 里打开。
 
 ```
 OpenCode 服务:运行中 v2.0.32
@@ -21,18 +28,20 @@ OpenCode 服务:运行中 v2.0.32
 退出
 ```
 
-## 功能
+## 它能做什么
 
-- **三态图标**——绿色：服务运行中；灰色：未运行；红色：无响应或认证失败。
+- **三态图标** —— 绿色：server 在跑；灰色：没跑；红色：无响应或认证失败。
   悬停可看到版本、PID 与活跃会话数。
-- **会话子菜单**——跨**所有项目**列出最近 15 条会话，运行中的排在前面，并显示相对时间。
-  点一条即可在新终端窗口里接管该会话。
-- **服务生命周期**——重启 / 停止 / 启动，直接在菜单里完成。
-- **两种语言**——默认英文，简体中文一键切换。
-- **安静地待在托盘里**——单实例（命名互斥体），并可自行安装开机自启与桌面快捷方式。
+- **在菜单里重启 / 停止 / 启动服务**，完全不用碰终端 —— 这正是它的意义：
+  一次点击，取代"退出 OpenCode 再敲命令"。
+- **最近的会话，一键直达** —— 跨**所有项目**列出最近 15 条会话，运行中的排在前面，
+  并显示相对时间。点一条即可在 OpenCode TUI 里打开它，且落在正确的目录。
+- **英文与简体中文**，在 Language / 语言 子菜单切换；默认英文。
+  选择记在 `settings.json` 里。
+- **单实例**，另外可按需安装桌面快捷方式与开机自启。
 
-它是**纯观察者**：绝不会在背后替你启动后台服务，只读取服务自己的注册文件、访问它的本地
-HTTP API。只有你主动点菜单，服务状态才会改变。
+它是**纯观察者**：绝不会在背后替你启动 server，只读取服务自己的注册文件、访问它的本地 HTTP API。
+只有你主动点菜单，服务状态才会改变。
 
 ## 环境要求
 
@@ -61,6 +70,10 @@ python  opencode_tray.pyw --uninstall-shortcut
 也可以直接双击 `start-tray.cmd`。它在启动前会先确认 `PATH` 上的 `pythonw` 能 import
 `pystray` 和 `Pillow` —— 因为 `pythonw` 没有控制台，缺依赖时会完全静默、什么提示都没有。
 
+**在它已经运行时再次启动会有用处**：正在运行的实例会被要求重新挂上托盘图标。
+Windows 偶尔会丢掉通知图标（典型情况是开机自启早于 shell 就绪），
+没有这个通知机制的话，你只能找到并杀掉进程才能把图标找回来。
+
 创建快捷方式时，图标会被现画成 `opencode_tray.ico`（已 gitignore），
 所以仓库里不需要提交二进制图标。
 
@@ -81,9 +94,9 @@ python  opencode_tray.pyw --uninstall-shortcut
 
 ```
 python  i18n.py             --selftest   # 13 项:含两种语言键集合一致性
-python  opencode_service.py --selftest   # 35 项:含真实端到端参数保真
-python  opencode_tray.pyw   --selftest   # 44 项:含已渲染 Win32 菜单状态
-python  win_shortcut.py     --selftest   # 7 项:.lnk 往返,含非 ASCII
+python  opencode_service.py --selftest   # 42 项:含真实端到端参数保真
+python  opencode_tray.pyw   --selftest   # 63 项:含已渲染 Win32 菜单状态
+python  win_shortcut.py     --selftest   # 9 项:.lnk 往返与 AppUserModelID 标记
 ```
 
 这些不是走过场的冒烟测试。它们会**真的启动 cmd.exe**，断言一个刁钻的目录名能逐字节原样
@@ -93,12 +106,17 @@ python  win_shortcut.py     --selftest   # 7 项:.lnk 往返,含非 ASCII
 
 有几处看起来奇怪，知道原因就合理了。
 
+- **通知里的应用名由 AppUserModelID 决定，而不是解释器。** 以 `pythonw.exe` 启动的进程会继承
+  该可执行文件的 `FileDescription`，所以气泡标题以前显示成"Python"。托盘现在声明
+  `qysnb.opencode-tray`，并写一个带同一 ID 的开始菜单快捷方式 —— shell 就是靠它解析出应用名的。
+  两者缺一不可；快捷方式在首次运行时创建，`--uninstall-shortcut` 会一并删除。
 - **打开会话会绕一个临时 `.cmd` 文件。** 把目录直接交给 `subprocess` 会被毁掉：
   MSVCRT 的引号层会把字面引号变成参数值的一部分，路径里的 `&` / `^` 还会被 `cmd` 吃掉。
   把命令写进批处理文件，`cmd` 就只按自己的规则解析一次。实测 7 种刁钻目录名，
   这是唯一一种全部保真的写法。
-- **优先 `cmd.exe` 而不是 PowerShell。** `subprocess` 配 `shell=True` 让 7 条测试路径全坏；
-  PowerShell 的 `Start-Process -ArgumentList` 会把含空格的目录拆成多个参数。
+- **这里优先 `cmd.exe` 而不是 PowerShell** —— 只针对启动器，不针对你自己的 shell。
+  `subprocess` 配 `shell=True` 让 7 条测试路径全坏；PowerShell 的
+  `Start-Process -ArgumentList` 会把含空格的目录拆成多个参数。
 - **会话在 Windows Terminal 里打开**（存在 `wt.exe` 时），并且启动器会设置
   `TERM=xterm-256color`。Windows Terminal **自己不会设 `TERM`**，缺了它 TUI 会走降级渲染。
 - **菜单是显式重建的。** `pystray` 在 Windows 上**不会在显示菜单时才生成菜单**——它复用缓存的
@@ -106,12 +124,11 @@ python  win_shortcut.py     --selftest   # 7 项:.lnk 往返,含非 ASCII
   那会销毁 Windows 正在跟踪的句柄，导致悬停高亮卡住或不出现。
 - **开机自启用注册表而不是「启动」文件夹**，因为部分加固过的机器会直接拒绝
   `.cmd` / `.bat` / `.vbs`。
-- **通知里的应用名由 AppUserModelID 决定，而不是解释器。** 以 `pythonw.exe` 启动的进程会继承
-  该可执行文件的 `FileDescription`，所以 Windows 以前把气泡标题显示成"Python"。托盘现在声明
-  `qysnb.opencode-tray`，并写一个带同一 ID 的开始菜单快捷方式 —— shell 就是靠它解析出应用名的。
-  两者缺一不可；快捷方式在首次运行时创建，`--uninstall-shortcut` 会一并删除。
 - **自启项与快捷方式会显式固定解释器**（用装它时的那个 Python 旁边的 `pythonw`），
   因为多 Python 机器上 `shutil.which` 可能选到另一个。
+- **图标会在启动稍后重挂一次**，之后每当有新的启动实例发来通知也会重挂。
+  shell 还在启动时 `Shell_NotifyIcon` 可能失败，而 `pystray` 忽略返回值 ——
+  于是进程跑得好好的，却一个图标都没有。
 
 ## 新增语言
 

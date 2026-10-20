@@ -110,6 +110,7 @@ _STRINGS = {
 
         # --- single instance ---
         "single.already_running": "OpenCode Tray is already running.",
+        "single.reassert_sent": "It was asked to re-add its tray icon.",
         "single.hint": "Look in the notification area at the bottom right of the taskbar (it may be tucked under \"Show hidden icons\"). Right-click the icon to restart, stop or start the service, or to open a session.",
         "single.check_unavailable": "Single-instance check unavailable (error {code}); starting anyway",
 
@@ -192,6 +193,7 @@ _STRINGS = {
 
         # --- single instance ---
         "single.already_running": "OpenCode 托盘已经在运行了。",
+        "single.reassert_sent": "已通知它重新挂上托盘图标。",
         "single.hint": "请查看任务栏右下角的通知区域(可能收在「显示隐藏的图标」里)。右键图标可以重启 / 停止 / 启动服务,或打开会话。",
         "single.check_unavailable": "单实例检查不可用(错误码 {code}),仍继续启动",
 

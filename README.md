@@ -2,12 +2,20 @@
 
 **English** · [简体中文](README.zh-Hans.md)
 
-A Windows system-tray indicator for the **OpenCode** background service.
+A tray icon for the **OpenCode V2** background service on Windows — for people who work in
+the OpenCode TUI (developed against it from Windows Terminal / PowerShell 7).
 
-Right-click the tray icon to see whether the service is up, restart / stop / start it,
-and jump straight into any of your OpenCode sessions. The interface is available in
-English (default) and Simplified Chinese — switch it from the *Language* submenu; the
-choice is remembered in `settings.json`.
+OpenCode V2 keeps a background server that owns every conversation. Two things follow from
+that, and both are mildly annoying without an indicator:
+
+- **Closing every window does not stop OpenCode.** The server keeps running, and keeps
+  holding memory and CPU. Nothing on screen tells you whether it is up.
+- **You sometimes have to restart that server yourself** — installing a plugin, for one.
+  The usual route is to quit OpenCode and type `opencode service restart` in a terminal,
+  which is a lot of ceremony for a single command.
+
+It is also the fastest way back to recent work: the menu lists your recent sessions across
+all projects, and clicking one opens it in the OpenCode TUI.
 
 ```
 OpenCode Service: Running v2.0.32
@@ -22,19 +30,22 @@ Language                          ▸  ● English
 Quit
 ```
 
-## What it does
+## What you get
 
-- **Tri-state icon** — green: the service is running; grey: not running; red: not responding
-  or authentication failed. Hover for a tooltip with version, PID and active session count.
-- **Session submenu** — the 15 most recent sessions across *all* projects, running ones first,
-  with a relative timestamp. Click one to attach to it in a new terminal window.
-- **Service lifecycle** — restart / stop / start, straight from the menu.
-- **Two languages** — English by default, Simplified Chinese one click away.
-- **Runs in the tray, not in your way** — a single instance (named mutex), and it can install
-  itself to start at logon plus a desktop shortcut.
+- **A tri-state icon** — green: the server is running; grey: it is not; red: it is not
+  responding, or authentication failed. Hover for the version, the PID and the number of
+  active sessions.
+- **Restart / stop / start from the menu**, without touching a terminal. This is the point:
+  one click instead of quitting OpenCode and typing a command.
+- **Recent sessions, one click away** — the 15 most recent sessions across *all* projects,
+  running ones first, each with a relative timestamp. Click one and it opens in the OpenCode
+  TUI, in the right directory.
+- **English and Simplified Chinese**, switchable from the *Language* submenu; English by
+  default. The choice is remembered in `settings.json`.
+- **A single instance**, plus a desktop shortcut and a logon entry if you want them.
 
-It is a **pure observer**. It never starts the background service behind your back: it reads the
-service's own registration file and talks to its local HTTP API. The service only changes when
+It is a **pure observer**. It never starts the server behind your back: it reads the
+service's own registration file and talks to its local HTTP API. The server only changes when
 you pick a menu item.
 
 ## Requirements
@@ -46,8 +57,8 @@ you pick a menu item.
   ```
   pip install pystray Pillow
   ```
-- OpenCode V2 installed locally (the `opencode2` command). The script locates it on `PATH`,
-  falling back to `%APPDATA%\npm`, and verifies that the major version is 2.
+- OpenCode V2 installed locally (the `opencode2` command). The script finds it on `PATH`,
+  falls back to `%APPDATA%\npm`, and checks that the major version is 2.
 
 ## Usage
 
@@ -65,6 +76,11 @@ You can also double-click `start-tray.cmd`. It checks that the `pythonw` on your
 import `pystray` and `Pillow` before launching, because `pythonw` has no console and would
 otherwise fail silently.
 
+Starting it again while it is already running does something useful: the running instance is
+asked to re-add its tray icon. Windows occasionally drops a notification icon (typically when
+the logon entry fires before the shell is ready), and without this you would have to find and
+kill the process to get it back.
+
 The icon it draws is written to `opencode_tray.ico` (gitignored) when you create a shortcut,
 so no binary asset is committed.
 
@@ -78,16 +94,16 @@ so no binary asset is committed.
 | `win_shortcut.py`    | Creates and reads Windows `.lnk` files through raw ctypes COM. Standard library only. |
 | `start-tray.cmd`     | Convenience launcher that checks the dependencies first. |
 
-The split is deliberate: `opencode_service.py`, `i18n.py` and `win_shortcut.py` are all testable
-without a display, and their `--selftest` runs on a machine with no `pystray` installed.
+The split is deliberate: `opencode_service.py`, `i18n.py` and `win_shortcut.py` are all
+testable without a display, and their `--selftest` runs on a machine with no `pystray`.
 
 ## Verifying it works
 
 ```
 python  i18n.py             --selftest   # 13 checks, incl. both catalogues defining the same keys
-python  opencode_service.py --selftest   # 35 checks, incl. real end-to-end argument fidelity
-python  opencode_tray.pyw   --selftest   # 44 checks, incl. the rendered Win32 menu state
-python  win_shortcut.py     --selftest   # 7 checks, .lnk round-trip incl. non-ASCII
+python  opencode_service.py --selftest   # 42 checks, incl. real end-to-end argument fidelity
+python  opencode_tray.pyw   --selftest   # 63 checks, incl. the rendered Win32 menu state
+python  win_shortcut.py     --selftest   # 9 checks, .lnk round-trip and AppUserModelID tagging
 ```
 
 These are not smoke tests. Among other things they really start `cmd.exe` and assert that an
@@ -98,14 +114,19 @@ awkward directory name arrives byte-identical, and they query the *rendered* Win
 
 Several things here look odd until you know why.
 
+- **Notifications are named by an AppUserModelID, not by the interpreter.** A process started
+  as `pythonw.exe` inherits that executable's `FileDescription`, so the balloons were headed
+  "Python". The tray declares `qysnb.opencode-tray` and writes a Start Menu shortcut carrying
+  the same ID, which is what lets the shell resolve the name. Both halves are required; the
+  shortcut is created on first run and removed by `--uninstall-shortcut`.
 - **Session launching goes through a temporary `.cmd` file.** Passing a directory straight to
-  `subprocess` mangles it: the MSVCRT quoting layer turns literal quotes into part of the value,
-  and `&` / `^` in a path get eaten by `cmd`. Writing the command into a batch file lets `cmd`
-  parse it exactly once. Measured across 7 awkward directory names, this was the only variant
-  that preserved all of them.
-- **`cmd.exe` is preferred over PowerShell.** `subprocess` with `shell=True` broke all seven test
-  paths, and PowerShell's `Start-Process -ArgumentList` splits a directory containing spaces into
-  several arguments.
+  `subprocess` mangles it: the MSVCRT quoting layer turns literal quotes into part of the
+  value, and `&` / `^` in a path get eaten by `cmd`. Writing the command into a batch file
+  lets `cmd` parse it exactly once. Measured across 7 awkward directory names, this was the
+  only variant that preserved all of them.
+- **`cmd.exe` is preferred over PowerShell here** — for the launcher only, not for your own
+  shell. `subprocess` with `shell=True` broke all seven test paths, and PowerShell's
+  `Start-Process -ArgumentList` splits a directory containing spaces into several arguments.
 - **Sessions open in Windows Terminal** when `wt.exe` is present, and the launcher sets
   `TERM=xterm-256color`. Windows Terminal does *not* set `TERM` itself, and without it the TUI
   falls back to degraded rendering.
@@ -115,15 +136,12 @@ Several things here look odd until you know why.
   tracking and breaks hover highlighting.
 - **Autostart uses the registry, not the Startup folder**, because the Startup folder on some
   hardened machines refuses `.cmd` / `.bat` / `.vbs` outright.
-- **Notifications are named by an AppUserModelID, not by the interpreter.** A process
-  started as `pythonw.exe` inherits that executable's `FileDescription`, so Windows used to
-  label the balloons "Python". The tray declares `qysnb.opencode-tray` and writes a Start
-  Menu shortcut carrying the same ID, which is what lets the shell resolve the name. Both
-  halves are required; the shortcut is created on first run and removed by
-  `--uninstall-shortcut`.
-- **The autostart entry and the shortcut pin the interpreter explicitly** (the `pythonw` next to
-  the Python that ran the install), because `shutil.which` picks a different Python on machines
-  with several installs.
+- **The autostart entry and the shortcut pin the interpreter explicitly** (the `pythonw` next
+  to the Python that ran the install), because `shutil.which` picks a different Python on
+  machines with several installs.
+- **The icon is re-added once, shortly after startup**, and again whenever another launch
+  signals it. `Shell_NotifyIcon` can fail while the shell is still starting up, and `pystray`
+  ignores the return value — the process then runs perfectly with no icon at all.
 
 ## Adding a language
 

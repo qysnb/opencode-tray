@@ -110,8 +110,51 @@ def ensure_icon_file() -> Path:
 MUTEX_NAME = r"Local\OpenCodeServerTray.SingleInstance"
 ERROR_ALREADY_EXISTS = 183
 
+# Second launches set this event so the running tray can re-add its icon, instead of the
+# user having to hunt down and kill the process when the icon goes missing.
+REASSERT_EVENT_NAME = r"Local\OpenCodeServerTray.ReassertIcon"
+EVENT_MODIFY_STATE = 0x0002
+WAIT_OBJECT_0 = 0
+
 # Held at module level so the handle lives as long as the process
 _mutex_handle = None
+_reassert_event_handle = None
+
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+def _create_named_event(name: str):
+    """Create (or open) an auto-reset event. Returns the handle, or None on failure."""
+    _kernel32.CreateEventW.restype = wintypes.HANDLE
+    _kernel32.CreateEventW.argtypes = [wintypes.LPVOID, wintypes.BOOL,
+                                       wintypes.BOOL, wintypes.LPCWSTR]
+    return _kernel32.CreateEventW(None, False, False, name) or None
+
+
+def _signal_named_event(name: str) -> bool:
+    """Set a named event, waking whoever waits on it. False when nobody is listening."""
+    _kernel32.OpenEventW.restype = wintypes.HANDLE
+    _kernel32.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    handle = _kernel32.OpenEventW(EVENT_MODIFY_STATE, False, name)
+    if not handle:
+        return False
+    try:
+        _kernel32.SetEvent.argtypes = [wintypes.HANDLE]
+        return bool(_kernel32.SetEvent(handle))
+    finally:
+        _kernel32.CloseHandle(handle)
+
+
+def _wait_named_event(handle, timeout_ms: int) -> bool:
+    """Wait on an event handle; True when it was signalled."""
+    _kernel32.WaitForSingleObject.restype = ctypes.c_ulong
+    _kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, ctypes.c_ulong]
+    return _kernel32.WaitForSingleObject(handle, timeout_ms) == WAIT_OBJECT_0
+
+
+def signal_icon_reassert() -> bool:
+    """Ask a running tray to re-add its icon. Returns True when one answered."""
+    return _signal_named_event(REASSERT_EVENT_NAME)
 
 
 def acquire_single_instance():
@@ -405,6 +448,7 @@ class TrayApp:
 
     def run(self, demo_seconds=None):
         threading.Thread(target=self._poll_loop, daemon=True).start()
+        threading.Thread(target=self._watch_reassert_requests, daemon=True).start()
         if demo_seconds:
             threading.Timer(demo_seconds, self.shutdown).start()
         # Re-assert the icon shortly after startup. When the Run key fires at logon the
@@ -432,6 +476,21 @@ class TrayApp:
                 self.icon.visible = True
             except Exception:
                 pass
+
+    def _watch_reassert_requests(self):
+        """
+        Wait for another launch asking us to re-add the icon.
+
+        Without this a lost icon is unrecoverable from the outside: the second launch only
+        learns that an instance is already running, which is useless advice. Now it can
+        ask, and the user does not have to find and kill the process.
+        """
+        handle = _reassert_event_handle
+        if not handle:
+            return
+        while not self._stop.is_set():
+            if _wait_named_event(handle, 1000):
+                self._reassert_icon()
 
     def shutdown(self):
         self._stop.set()
@@ -852,6 +911,27 @@ def _selftest_body(check, L, results) -> int:
           getattr(probe_app.icon, "visible", True) is not False,
           repr(getattr(probe_app.icon, "visible", None)))
 
+    print("== 1d. A second launch can ask the running tray to re-add its icon ==")
+    check("event name is per-session (Local\\ prefix)",
+          REASSERT_EVENT_NAME.startswith("Local\\"), REASSERT_EVENT_NAME)
+    # Exercise the plumbing on a throwaway event name so the live tray is not disturbed.
+    probe_name = REASSERT_EVENT_NAME + ".selftest"
+    probe_handle = _create_named_event(probe_name)
+    check("named event created", bool(probe_handle))
+    if probe_handle:
+        woken = []
+        threading.Thread(
+            target=lambda: woken.append(1) if _wait_named_event(probe_handle, 5000) else None,
+            daemon=True,
+        ).start()
+        time.sleep(0.2)
+        check("signalling a listening event succeeds", _signal_named_event(probe_name))
+        time.sleep(0.4)
+        check("the waiter woke up", bool(woken), str(woken))
+        _kernel32.CloseHandle(probe_handle)
+    check("signalling a name nobody listens on returns False",
+          _signal_named_event(REASSERT_EVENT_NAME + ".nobody") is False)
+
     print("== 2. Menu structure ==")
     texts = [_item_text(app, item) for item in app.icon.menu.items]
     for key in ("menu.sessions", "menu.restart", "menu.stop", "menu.start",
@@ -1053,6 +1133,7 @@ def _selftest_body(check, L, results) -> int:
 # ---------------------------------------------------------------------------
 
 def main(argv=None) -> int:
+    global _reassert_event_handle
     parser = argparse.ArgumentParser(description="OpenCode background service tray indicator")
     parser.add_argument("--demo", type=float, metavar="SECONDS",
                         help="show for N seconds, then exit (for automated checks)")
@@ -1086,9 +1167,17 @@ def main(argv=None) -> int:
     # Single instance: double-clicking twice must not give two tray icons
     acquired, reason = acquire_single_instance()
     if not acquired:
-        _inform(f"{reason}\n\n{i18n._('single.hint')}")
+        # The running instance owns the icon; ask it to re-add it, which is the only way
+        # to recover a tray icon that Windows dropped.
+        signalled = signal_icon_reassert()
+        message = reason
+        if signalled:
+            message += "\n\n" + i18n._("single.reassert_sent")
+        message += "\n\n" + i18n._("single.hint")
+        _inform(message)
         return 1
 
+    _reassert_event_handle = _create_named_event(REASSERT_EVENT_NAME)
     # Must happen before the icon exists: the AUMID has to be declared before the shell
     # creates any window for this process, otherwise notifications still say "Python".
     apply_app_identity()
