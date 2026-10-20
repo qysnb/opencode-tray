@@ -3,9 +3,9 @@
 [English](README.md) · **简体中文**
 
 一个面向 Windows 上 **OpenCode V2** 后台服务的托盘图标 —— 给长期泡在 OpenCode TUI 里的人用的
-（本项目就是在 Windows Terminal / PowerShell 7 里对着它开发的）。
+（本项目基于 Windows Terminal / PowerShell 7 开发）。
 
-OpenCode V2 用一个**后台 server** 管理所有对话。由此带来两件挺别扭的事，没有指示器时尤其明显：
+OpenCode V2 用一个**后台 server** 管理所有对话。由此带来两个不足：
 
 - **关掉所有窗口 ≠ 关掉 OpenCode。** server 还在跑，还会一直占着内存和 CPU，
   而屏幕上没有任何东西告诉你它到底在不在。
